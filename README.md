@@ -157,13 +157,19 @@ scrypt, bundled data files, Qt plugins, ctypes DLL lookups — so the build has 
 self-check:
 
 ```powershell
-.\dist\qt-otp.exe --selftest report.json
+.\dist\qt-otp.exe --selftest report.json | Out-Host
 ```
 
 It exercises the real machinery (scrypt round-trip, SVG rendering, the
 session-lock watcher, opening the main window) and exits non-zero if anything is
 wrong. Onefile builds extract to a temp directory on launch, so first start
 takes a second or two.
+
+The pipe is load-bearing: PowerShell does not wait for GUI-subsystem
+executables, so without it the checks print after your next prompt and
+`$LASTEXITCODE` belongs to the previous command. In a script, use
+`Start-Process -Wait -PassThru` and read its `ExitCode` — which is what the
+release workflow does.
 
 ## Releasing
 
@@ -192,7 +198,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-153 tests, no display required (Qt runs offscreen):
+155 tests, no display required (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;

@@ -64,9 +64,29 @@ jobs:
 
       - name: Smoke-test the executable
         run: |
-          & .\dist\qt-otp.exe --selftest selftest-report.json
-          if ($LASTEXITCODE -ne 0) { Write-Error "the built executable failed its self-test"; exit 1 }
-          Get-Content selftest-report.json
+          # PowerShell does NOT wait for a GUI-subsystem executable: with `&` the
+          # next line runs before the process has even started, so $LASTEXITCODE
+          # is whatever the previous command left behind. Start-Process -Wait is
+          # what actually blocks, and -PassThru gives the real exit code.
+          $proc = Start-Process -FilePath .\dist\qt-otp.exe `
+            -ArgumentList '--selftest', 'selftest-report.json' `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput selftest-stdout.txt `
+            -RedirectStandardError selftest-stderr.txt
+          Get-Content selftest-stdout.txt
+          if ((Test-Path selftest-stderr.txt) -and (Get-Item selftest-stderr.txt).Length -gt 0) {
+            Get-Content selftest-stderr.txt
+          }
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "the built executable failed its self-test (exit $($proc.ExitCode))"
+            exit 1
+          }
+          $report = Get-Content selftest-report.json -Raw | ConvertFrom-Json
+          if (-not $report.ok) {
+            Write-Error "the self-test report contains a failed check"
+            exit 1
+          }
+          Write-Host "self-test passed on the packaged build"
 
       - name: Name and checksum the asset
         id: asset

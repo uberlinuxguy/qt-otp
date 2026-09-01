@@ -95,3 +95,30 @@ def test_the_build_extra_provides_pyinstaller() -> None:
     assert "pyinstaller" in pyproject
     scripts = WORKFLOW.read_text(encoding="utf-8")
     assert '.[dev,build]' in scripts, "the workflow must install the extra that supplies PyInstaller"
+
+
+def smoke_step(job: dict) -> dict:
+    return next(s for s in job["steps"] if s.get("name", "").startswith("Smoke-test"))
+
+
+def test_the_smoke_test_waits_for_the_gui_executable(job: dict) -> None:
+    r"""PowerShell does not block on GUI-subsystem executables.
+
+    A bare `& .\dist\qt-otp.exe` returns before the process has started, so
+    $LASTEXITCODE reflects the previous command: every build looks broken, or
+    worse, a broken one looks fine. Start-Process -Wait is what actually blocks.
+    """
+    run = smoke_step(job)["run"]
+    assert "Start-Process" in run and "-Wait" in run, "the smoke test would not wait for the exe"
+    assert "-PassThru" in run, "without -PassThru there is no exit code to check"
+    # The explanatory comment may mention it; the code may not.
+    code_lines = [line for line in run.splitlines() if not line.strip().startswith("#")]
+    assert "$LASTEXITCODE" not in "\n".join(code_lines), (
+        "$LASTEXITCODE is meaningless for a GUI exe here"
+    )
+
+
+def test_the_smoke_test_checks_both_the_exit_code_and_the_report(job: dict) -> None:
+    run = smoke_step(job)["run"]
+    assert "$proc.ExitCode" in run
+    assert "$report.ok" in run, "a report full of failures would otherwise pass silently"
