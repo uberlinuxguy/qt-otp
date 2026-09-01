@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"
+     role="img" aria-label="OTP Vault">
+  <title>OTP Vault</title>
+
+  <!-- backdrop #294a2f | shield #abd4b2 | lock + elapsed arc #c0ddba | remaining arc #71a071 -->
+  <rect width="512" height="512" fill="#294a2f"/>
+
+  <!-- artwork is authored on the 406x445 source grid, fitted to the 512 canvas -->
+  <g transform="translate(256 256) scale(1.0556) translate(-200.5 -221)">
+
+    <!-- shield -->
+    <path fill="none" stroke="#abd4b2" stroke-width="24"
+          stroke-linejoin="round" stroke-linecap="round"
+          d="M200.5 18 L28.5 79
+             C25 132 25 192 35 238
+             C50 300 95 376 200.5 426
+             C306 376 351 300 366 238
+             C376 192 376 132 372.5 79 Z"/>
+
+    <!-- countdown ring: remaining, 3 o'clock to 6 o'clock -->
+    <path fill="none" stroke="#71a071" stroke-width="20"
+          d="M311.5 226 A111 111 0 0 1 200.5 337"/>
+    <!-- countdown ring: elapsed, 6 o'clock round to 10 o'clock -->
+    <path fill="none" stroke="#c0ddba" stroke-width="20"
+          d="M200.5 337 A111 111 0 0 1 135.3 136.2"/>
+
+    <!-- gear, tucked behind the padlock -->
+    <g transform="translate(294.5 168)" fill="#c0ddba">
+      <rect x="-8" y="-38" width="16" height="20" rx="3"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(45)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(90)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(135)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(180)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(225)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(270)"/>
+      <rect x="-8" y="-38" width="16" height="20" rx="3" transform="rotate(315)"/>
+      <path fill-rule="evenodd"
+            d="M0-28A28 28 0 1 1 0 28A28 28 0 1 1 0-28Z
+               M0-14A14 14 0 1 0 0 14A14 14 0 1 0 0-14Z"/>
+    </g>
+
+    <!-- backdrop-coloured halo: keeps the gear visually clear of the lock -->
+    <path fill="none" stroke="#294a2f" stroke-width="16" stroke-linejoin="round"
+          d="M130 180 A14 14 0 0 1 144 166
+             L257 166 A14 14 0 0 1 271 180
+             L271 235 A70.5 70.5 0 0 1 130 235 Z"/>
+
+    <!-- shackle -->
+    <path fill="none" stroke="#c0ddba" stroke-width="19"
+          d="M161 172 L161 128.5 A39.5 39.5 0 0 1 240 128.5 L240 172"/>
+
+    <!-- padlock body, keyhole knocked out -->
+    <path fill="#c0ddba" fill-rule="evenodd"
+          d="M130 180 A14 14 0 0 1 144 166
+             L257 166 A14 14 0 0 1 271 180
+             L271 235 A70.5 70.5 0 0 1 130 235 Z
+             M190.5 235 A18 18 0 1 1 210.5 235
+             L213.5 250 A13 13 0 0 1 187.5 250 Z"/>
+  </g>
+</svg>

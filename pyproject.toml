@@ -1,0 +1,34 @@
+[project]
+name = "qt-otp"
+# Single source of truth: otpvault.__version__. The release workflow checks the
+# git tag against it, so there is only ever one number to bump.
+dynamic = ["version"]
+description = "Qt desktop vault for TOTP authenticator codes, stored in a password-encrypted file"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "PySide6>=6.6",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pyyaml>=6.0"]
+build = ["pyinstaller>=6.11,<7"]
+
+[project.gui-scripts]
+qt-otp = "otpvault.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "otpvault/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["otpvault"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

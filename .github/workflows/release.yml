@@ -1,0 +1,130 @@
+# Build the single-file Windows executable and publish it as a GitHub release.
+#
+# Triggered by a tag like v1.0 or v2.11 (the vX.X shape). To also release patch
+# tags such as v1.0.3, add 'v[0-9]+.[0-9]+.[0-9]+' to the tags list below.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+'
+  workflow_dispatch:      # lets you rehearse the build without tagging
+
+permissions:
+  contents: write         # required to create the release and upload assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Deterministic Qt rendering on a runner with no interactive desktop.
+      # The bundled Windows platform plugin is checked separately, by --selftest.
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64          # PySide6 publishes no 32-bit Windows wheels
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the project and build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,build]"
+
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $version = python -c "import otpvault; print(otpvault.__version__)"
+          $expected = "v" + ((($version -split '\.')[0, 1]) -join '.')
+          if ($expected -ne "${{ github.ref_name }}") {
+            Write-Error "tag ${{ github.ref_name }} does not match otpvault __version__ $version (expected $expected). Bump the version or retag."
+            exit 1
+          }
+          Write-Host "tag ${{ github.ref_name }} matches version $version"
+
+      - name: Run the test suite
+        run: python -m pytest -q
+
+      - name: Render the application icon
+        run: python tools/make_icon.py
+
+      - name: Build qt-otp.exe
+        run: python -m PyInstaller --noconfirm --clean qt-otp.spec
+
+      - name: Smoke-test the executable
+        run: |
+          & .\dist\qt-otp.exe --selftest selftest-report.json
+          if ($LASTEXITCODE -ne 0) { Write-Error "the built executable failed its self-test"; exit 1 }
+          Get-Content selftest-report.json
+
+      - name: Name and checksum the asset
+        id: asset
+        run: |
+          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
+          $name = "qt-otp-$tag-windows-x64.exe"
+          Move-Item dist\qt-otp.exe "dist\$name"
+          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "dist\$name.sha256"
+          $size = "{0:N1}" -f ((Get-Item "dist\$name").Length / 1MB)
+          "name=$name"   | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "sha256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "size=$size"   | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          Write-Host "$name  ($size MB)  sha256=$hash"
+
+      - name: Upload the build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-otp-windows-x64
+          path: |
+            dist/${{ steps.asset.outputs.name }}
+            dist/${{ steps.asset.outputs.name }}.sha256
+            selftest-report.json
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag  = "${{ github.ref_name }}"
+          $name = "${{ steps.asset.outputs.name }}"
+          @"
+          ## qt-otp $tag
+
+          Single-file Windows build (x64). Download ``$name`` and run it — no
+          installer, no Python needed.
+
+          Windows will show a SmartScreen warning because the executable is not
+          code-signed: choose **More info** then **Run anyway**, or verify the
+          download first.
+
+          | | |
+          | --- | --- |
+          | Size | $("${{ steps.asset.outputs.size }}") MB |
+          | SHA-256 | ``$("${{ steps.asset.outputs.sha256 }}")`` |
+
+          ``````powershell
+          (Get-FileHash .\$name -Algorithm SHA256).Hash
+          ``````
+          "@ | Out-File -Encoding utf8 release-notes.md
+
+          # Re-runs of a tag should update the existing release, not fail.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "release $tag exists; replacing its assets"
+            gh release upload $tag "dist/$name" "dist/$name.sha256" --clobber
+          } else {
+            gh release create $tag "dist/$name" "dist/$name.sha256" `
+              --title "qt-otp $tag" --notes-file release-notes.md --verify-tag
+          }

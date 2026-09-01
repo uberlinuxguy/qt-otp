@@ -50,6 +50,23 @@ lock state is readable without switching to the app.
 
 ## Install and run
 
+### Windows: just the .exe
+
+Grab `qt-otp-vX.X-windows-x64.exe` from the
+[latest release](../../releases/latest) and run it. One self-contained file
+(~47 MB), no installer and no Python needed; it keeps its vault in the same
+place as a source install.
+
+The executable is not code-signed, so SmartScreen will warn on first run —
+**More info** then **Run anyway**. Every release ships a `.sha256` sidecar if
+you would rather verify the download:
+
+```powershell
+(Get-FileHash .\qt-otp-v1.0-windows-x64.exe -Algorithm SHA256).Hash
+```
+
+### From source
+
 Needs 64-bit Python 3.10+ (PySide6 publishes no 32-bit Windows wheels).
 
 ```powershell
@@ -116,8 +133,58 @@ otpvault/
   config.py     QSettings-backed preferences (nothing sensitive)
   ui/           unlock screen, code table, dialogs, icons
   resources/    qt-otp-icon.svg, rendered per size for the window, taskbar and tray
+  selftest.py   post-build checks, run with --selftest
 tests/          RFC 6238 vectors, crypto tamper cases, vault lifecycle
+tools/          make_icon.py (SVG -> .ico), entrypoint.py (PyInstaller script)
+qt-otp.spec     PyInstaller build definition
 ```
+
+## Building the executable
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
+.\.venv\Scripts\python.exe tools\make_icon.py          # build\qt-otp.ico from the SVG
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean qt-otp.spec
+```
+
+That writes `dist\qt-otp.exe`: windowed, single file, UPX off (it saves a few
+MB and reliably trips antivirus heuristics). The `.ico` is generated from
+`qt-otp-icon.svg` by the same code path the app uses for its window icon, so the
+two cannot drift apart.
+
+Freezing breaks things that pass in a checkout — the OpenSSL backend behind
+scrypt, bundled data files, Qt plugins, ctypes DLL lookups — so the build has a
+self-check:
+
+```powershell
+.\dist\qt-otp.exe --selftest report.json
+```
+
+It exercises the real machinery (scrypt round-trip, SVG rendering, the
+session-lock watcher, opening the main window) and exits non-zero if anything is
+wrong. Onefile builds extract to a temp directory on launch, so first start
+takes a second or two.
+
+## Releasing
+
+1. Bump `__version__` in [`otpvault/__init__.py`](otpvault/__init__.py) — the
+   only place a version number lives; `pyproject.toml` reads it from there.
+2. Tag and push:
+
+   ```powershell
+   git tag v1.1
+   git push origin v1.1
+   ```
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) then runs on a
+Windows runner: it refuses tags that disagree with `__version__`, runs the test
+suite, builds the exe, smoke-tests it with `--selftest`, and publishes a release
+with the executable and its SHA-256. Re-running a tag replaces the assets
+instead of failing. `workflow_dispatch` builds without releasing, if you want to
+rehearse.
+
+The trigger is the `vX.X` shape (`v1.0`, `v2.11`). To release patch tags too,
+add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 
 ## Tests
 
@@ -125,7 +192,7 @@ tests/          RFC 6238 vectors, crypto tamper cases, vault lifecycle
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-142 tests, no display required (Qt runs offscreen):
+153 tests, no display required (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;
@@ -140,7 +207,9 @@ tests/          RFC 6238 vectors, crypto tamper cases, vault lifecycle
   that the locked variant is a desaturated version of the same artwork;
 - the vault location: moving a live vault, refusing to clobber another file
   without confirmation, keeping the old path when a move fails, and never
-  persisting a `--vault` override.
+  persisting a `--vault` override;
+- the release pipeline: that the workflow still triggers on `vX.X`, tests before
+  it publishes, smoke-tests the executable, and references files that exist.
 
 ## License
 
