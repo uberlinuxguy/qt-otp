@@ -63,12 +63,15 @@ def main(argv: list[str] | None = None) -> int:
 
     _set_windows_app_id()
 
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
     from .config import Settings
+    from .singleinstance import SingleInstance, instance_key
     from .ui import icons
     from .ui.mainwindow import MainWindow
     from .vault import Vault
+
+    log = logging.getLogger(__name__)
 
     app = QApplication(sys.argv[:1] + (argv or []))
     app.setApplicationName(APP_NAME)
@@ -85,9 +88,29 @@ def main(argv: list[str] | None = None) -> int:
     # --vault is a one-off override: it is not written back to the settings.
     vault = Vault(settings.resolved_vault_path(args.vault))
 
+    # One copy per vault. A second launch hands focus to the first and stops.
+    guard = SingleInstance(instance_key(vault.path))
+    if not guard.try_acquire():
+        if guard.notify_existing():
+            log.info("an instance is already open for %s; brought it to the front", vault.path)
+            return 0
+        QMessageBox.warning(
+            None,
+            APP_DISPLAY_NAME,
+            f"{APP_DISPLAY_NAME} already has this vault open, but that window is not "
+            f"responding.\n\n{vault.path}\n\nClose the other copy and try again.",
+        )
+        return 1
+
     window = MainWindow(vault, settings, path_overridden=bool(args.vault))
+    # Deliberately not parented to the window: `guard` is held by this frame for
+    # the life of the app, and release() below must not race Qt deleting it.
+    guard.activateRequested.connect(window.activate)
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        guard.release()
 
 
 if __name__ == "__main__":

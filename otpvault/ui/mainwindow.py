@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from .. import APP_DISPLAY_NAME, __version__
 from ..config import Settings
 from ..lockwatch import SessionWatcher
+from ..singleinstance import raise_to_foreground
 from ..vault import BadPassword, CryptoError, OtpEntry, Vault, VaultFormatError
 from . import icons
 from .codes import CodeFilterProxy, CodeTableModel, CodeTableView, CountdownDelegate
@@ -250,7 +251,7 @@ class MainWindow(QMainWindow):
         tray.setToolTip(APP_DISPLAY_NAME)
         menu = QMenu(self)
         show_action = QAction("Show window", self)
-        show_action.triggered.connect(self._show_and_raise)
+        show_action.triggered.connect(self.activate)
         menu.addAction(show_action)
         menu.addAction(self._action_lock)
         menu.addSeparator()
@@ -653,19 +654,26 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- window
 
-    def _show_and_raise(self) -> None:
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+    @Slot()
+    def activate(self) -> None:
+        """Bring the window forward and give it focus.
+
+        Called from the tray, and by a second launch that found this instance
+        already running.
+        """
+        raise_to_foreground(self)
         if self.locked:
             self._unlock_page.focus_password()
+        else:
+            self._table.setFocus()
+        self._watcher.note_activity()
 
     def _on_tray_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             if self.isVisible() and not self.isMinimized():
                 self.hide()
             else:
-                self._show_and_raise()
+                self.activate()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt API
         if (

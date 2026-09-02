@@ -146,6 +146,26 @@ def check_main_window() -> str:
     return "opens locked, on the unlock screen"
 
 
+def check_single_instance() -> str:
+    """The local socket and the Windows mutex behind one-copy-per-vault."""
+    import uuid
+
+    from .singleinstance import SingleInstance
+
+    key = f"qt-otp-selftest-{uuid.uuid4().hex[:16]}"
+    first = SingleInstance(key)
+    if not first.try_acquire():
+        raise AssertionError("could not claim an instance key that nothing else holds")
+    try:
+        if SingleInstance(key).try_acquire():
+            raise AssertionError("a second instance was allowed to claim the same key")
+    finally:
+        first.release()
+    if not SingleInstance(key).try_acquire():
+        raise AssertionError("the key was not released")
+    return f"claimed, defended and released {key[:24]}…"
+
+
 def check_vault_location() -> str:
     from .config import Settings
 
@@ -164,6 +184,7 @@ CHECKS = (
     ("vault_roundtrip", check_vault_roundtrip),
     ("lock_watcher", check_lock_watcher),
     ("main_window", check_main_window),
+    ("single_instance", check_single_instance),
     ("vault_location", check_vault_location),
 )
 

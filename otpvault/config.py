@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -13,12 +14,19 @@ from .vault import default_vault_path
 IDLE_CHOICES = (0, 60, 120, 300, 600, 900, 1800)
 
 
+SETTINGS_FILE_ENV = "QT_OTP_SETTINGS_FILE"
+
+
 def settings_store() -> QSettings:
     """The backing store for preferences.
 
-    One seam for every read and write, so tests can redirect preferences to a
-    temp file instead of the user's registry.
+    One seam for every read and write. Setting QT_OTP_SETTINGS_FILE points it
+    at an ini file instead of the per-user registry/config location, which
+    keeps a portable install (or a test) self-contained.
     """
+    override = os.environ.get(SETTINGS_FILE_ENV)
+    if override:
+        return QSettings(override, QSettings.Format.IniFormat)
     return QSettings(ORG_NAME, APP_NAME)
 
 

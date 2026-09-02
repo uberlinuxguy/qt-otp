@@ -22,6 +22,10 @@ moment you lock your workstation.
   which moves the existing vault file to the new place. See
   [Where the vault lives](#where-the-vault-lives).
 - **Locks when you walk away.** See [Locking](#locking).
+- **One window per vault.** Launching it again while it is already running
+  brings the existing window to the front instead of opening a second copy —
+  including when it was sitting in the tray. See
+  [One instance per vault](#one-instance-per-vault).
 - **Live codes.** Each row shows the current code and a countdown bar; the code
   turns amber under 10 s and red under 5 s.
 - **Click to copy.** Clicking anywhere on a row copies that row's code, and the
@@ -100,8 +104,36 @@ macOS). Three ways to put it somewhere else:
 3. **For one run only**, `--vault PATH`. That overrides the saved location
    without changing it, and the Settings row is disabled for that run.
 
+Preferences themselves live in the registry on Windows (`QSettings`). Set
+`QT_OTP_SETTINGS_FILE` to an `.ini` path to keep them in a file instead, which
+is what you want for a portable install on a USB stick alongside the vault.
+
 A synced folder (Nextcloud, Dropbox) works — the file is encrypted and safe to
 sync — but avoid writing to it from two machines at once.
+
+## One instance per vault
+
+Starting the app a second time on the same vault does not open a second window:
+the new process finds the running one over a local socket (a named pipe on
+Windows), asks it to come forward, and exits. The existing window is unminimized
+and focused, and if it was hidden in the tray it reappears — with the password
+field focused when the vault is locked.
+
+Two *different* vaults can still be open at once. That is the useful case, and
+keying on the vault path also blocks the harmful one: two copies of the same
+vault each hold every entry in memory and each save rewrites the whole file, so
+the second one to save would quietly discard the other's changes.
+
+Details worth knowing:
+
+- The lock is per user as well as per vault, and the socket name is a hash, so
+  nothing about your paths is exposed in a namespace other sessions can read.
+- A socket left behind by a crash is cleaned up and taken over rather than
+  locking you out.
+- If something holds the vault open but never answers, the new launch says so
+  instead of doing nothing.
+- `--vault` selects which lock applies, so `--vault other.otpv` opens a second
+  window quite happily.
 
 ## Keyboard
 
@@ -131,6 +163,7 @@ otpvault/
   vault.py      entries, unlock/lock lifecycle, atomic writes
   lockwatch.py  session-lock / sleep / idle detection per platform
   config.py     QSettings-backed preferences (nothing sensitive)
+  singleinstance.py  one copy per vault, and the focus handoff
   ui/           unlock screen, code table, dialogs, icons
   resources/    qt-otp-icon.svg, rendered per size for the window, taskbar and tray
   selftest.py   post-build checks, run with --selftest
@@ -198,7 +231,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-155 tests, no display required (Qt runs offscreen):
+175 tests, no display required (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;
@@ -215,7 +248,11 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
   without confirmation, keeping the old path when a move fails, and never
   persisting a `--vault` override;
 - the release pipeline: that the workflow still triggers on `vX.X`, tests before
-  it publishes, smoke-tests the executable, and references files that exist.
+  it publishes, smoke-tests the executable, and references files that exist;
+- single-instance behaviour, including four tests that launch the app twice as
+  real processes and check the second one hands over and exits — the request and
+  reply cannot be exercised inside one process, because two ends of the same
+  pipe interfere there.
 
 ## License
 

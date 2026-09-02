@@ -35,16 +35,16 @@ def pump(qapp):
 def isolate_settings(tmp_path, monkeypatch):
     """Redirect preferences to a per-test ini file.
 
-    QSettings.setDefaultFormat() is not enough — it does not retarget the
-    2-argument constructor on Windows, so without this every Settings.save()
-    in the suite would land in the user's real registry.
-    """
-    from PySide6.QtCore import QSettings
+    Uses the app's own QT_OTP_SETTINGS_FILE override rather than patching over
+    `settings_store`, so the tests exercise the real code path and child
+    processes launched by a test inherit the same isolation.
 
-    from otpvault import config
+    (QSettings.setDefaultFormat() would not do: it does not retarget the
+    2-argument constructor on Windows, so every Settings.save() in the suite
+    would land in the user's real registry.)
+    """
+    from otpvault.config import SETTINGS_FILE_ENV
 
     store_file = str(tmp_path / "settings.ini")
-    monkeypatch.setattr(
-        config, "settings_store", lambda: QSettings(store_file, QSettings.Format.IniFormat)
-    )
+    monkeypatch.setenv(SETTINGS_FILE_ENV, store_file)
     return store_file

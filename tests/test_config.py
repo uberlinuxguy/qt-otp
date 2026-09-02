@@ -77,3 +77,26 @@ def test_resolved_path_expands_a_tilde() -> None:
     resolved = Settings(vault_path="~/vaults/codes.otpv").resolved_vault_path()
     assert "~" not in str(resolved)
     assert resolved == Path.home() / "vaults" / "codes.otpv"
+
+
+def test_the_settings_file_override_is_honoured(tmp_path: Path, monkeypatch) -> None:
+    """QT_OTP_SETTINGS_FILE keeps preferences beside a portable install."""
+    from otpvault.config import SETTINGS_FILE_ENV, settings_store
+
+    target = tmp_path / "portable" / "settings.ini"
+    monkeypatch.setenv(SETTINGS_FILE_ENV, str(target))
+
+    Settings(idle_lock_seconds=120, vault_path=str(tmp_path / "v.otpv")).save()
+
+    assert Path(settings_store().fileName()) == target
+    assert target.is_file(), "nothing was written to the override location"
+    assert "idle_lock_seconds" in target.read_text(encoding="utf-8")
+    assert Settings.load().idle_lock_seconds == 120
+
+
+def test_without_the_override_the_per_user_store_is_used(monkeypatch) -> None:
+    from otpvault.config import SETTINGS_FILE_ENV, settings_store
+
+    monkeypatch.delenv(SETTINGS_FILE_ENV, raising=False)
+    # fileName() only reports where it would read and write; nothing is stored.
+    assert "qt-otp" in settings_store().fileName()
