@@ -102,6 +102,7 @@ class UnlockPage(QWidget):
     unlockRequested = Signal(str)
     createRequested = Signal(str)
     changePathRequested = Signal()
+    importRequested = Signal()
 
     def __init__(self, vault_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -183,6 +184,20 @@ class UnlockPage(QWidget):
         path_layout.addWidget(self._path_button)
         layout.addWidget(self._path_row)
 
+        # Also first run only: adopt a vault that already exists somewhere.
+        self._import_row = QWidget()
+        import_layout = QHBoxLayout(self._import_row)
+        import_layout.setContentsMargins(0, 0, 0, 0)
+        import_layout.setSpacing(8)
+        already_have = QLabel("Already have a vault?")
+        already_have.setStyleSheet(muted_style(self))
+        import_layout.addWidget(already_have, 1)
+        self._import_button = QPushButton("Import…")
+        self._import_button.setToolTip("Use a vault file from a backup or another machine")
+        self._import_button.clicked.connect(self.importRequested)
+        import_layout.addWidget(self._import_button)
+        layout.addWidget(self._import_row)
+
         self._message = QLabel()
         self._message.setWordWrap(True)
         self._message.setMinimumHeight(34)
@@ -240,6 +255,7 @@ class UnlockPage(QWidget):
         # The location is only settable before the vault exists; afterwards it
         # moves from Tools → Settings, which knows how to relocate the file.
         self._path_row.setVisible(creating)
+        self._import_row.setVisible(creating)
         self._update_path_label()
         self._button.setText("Create vault" if creating else "Unlock")
         self._on_text_changed()

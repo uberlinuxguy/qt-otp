@@ -157,6 +157,28 @@ class SingleInstance(QObject):
             self._server = None
         self._release_process_lock()
 
+    def rebind(self, key: str) -> bool:
+        """Move the guard to a different key.
+
+        The key is derived from the vault path, so when the app changes vaults
+        at runtime — importing one, or moving the file — the guard has to follow
+        or it would be defending a vault this window no longer has open.
+
+        Returns False if another process already holds the new key; the old key
+        is released either way, since this window is no longer using it.
+        """
+        if key == self._key:
+            return self.is_primary
+        was_primary = self.is_primary
+        self.release()
+        self._key = key
+        if not was_primary:
+            return False
+        acquired = self.try_acquire()
+        if not acquired:
+            log.warning("another instance already has %s open", key)
+        return acquired
+
     # ------------------------------------------------------- the OS-level lock
 
     def _claim_process_lock(self) -> bool:

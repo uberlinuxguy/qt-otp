@@ -102,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    window = MainWindow(vault, settings, path_overridden=bool(args.vault))
+    window = MainWindow(
+        vault, settings, path_overridden=bool(args.vault), instance_guard=guard
+    )
     # Deliberately not parented to the window: `guard` is held by this frame for
     # the life of the app, and release() below must not race Qt deleting it.
     guard.activateRequested.connect(window.activate)

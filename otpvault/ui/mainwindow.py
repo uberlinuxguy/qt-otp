@@ -28,11 +28,17 @@ from PySide6.QtWidgets import (
 from .. import APP_DISPLAY_NAME, __version__
 from ..config import Settings
 from ..lockwatch import SessionWatcher
-from ..singleinstance import raise_to_foreground
+from ..singleinstance import SingleInstance, instance_key, raise_to_foreground
 from ..vault import BadPassword, CryptoError, OtpEntry, Vault, VaultFormatError
 from . import icons
 from .codes import CodeFilterProxy, CodeTableModel, CodeTableView, CountdownDelegate
-from .dialogs import ChangePasswordDialog, EntryDialog, SettingsDialog, choose_vault_path
+from .dialogs import (
+    ChangePasswordDialog,
+    EntryDialog,
+    ImportVaultDialog,
+    SettingsDialog,
+    choose_vault_path,
+)
 from .styles import muted_style
 from .unlock import UnlockPage
 
@@ -47,10 +53,18 @@ FAILED_ATTEMPTS_BEFORE_DELAY = 3
 class MainWindow(QMainWindow):
     """Owns the vault, the lock policy, and the two UI pages."""
 
-    def __init__(self, vault: Vault, settings: Settings, path_overridden: bool = False) -> None:
+    def __init__(
+        self,
+        vault: Vault,
+        settings: Settings,
+        path_overridden: bool = False,
+        instance_guard: SingleInstance | None = None,
+    ) -> None:
         super().__init__()
         self._vault = vault
         self._settings = settings
+        # Held so the guard can be re-keyed when the vault path changes.
+        self._instance_guard = instance_guard
         # True when --vault was passed: the location is fixed for this run.
         self._path_overridden = path_overridden
         self._failed_attempts = 0
@@ -97,6 +111,7 @@ class MainWindow(QMainWindow):
         self._unlock_page.unlockRequested.connect(self._on_unlock_requested)
         self._unlock_page.createRequested.connect(self._on_create_requested)
         self._unlock_page.changePathRequested.connect(self._choose_vault_location)
+        self._unlock_page.importRequested.connect(self._import_existing_vault)
         self._stack.addWidget(self._unlock_page)
 
         vault_page = QWidget(self)
@@ -600,19 +615,71 @@ class MainWindow(QMainWindow):
             )
             return False
 
-        # An explicit choice in the UI is meant to stick, even in a --vault run.
-        self._settings.vault_path = str(self._vault.path)
-        self._settings.save()
+        self._adopt_vault_path(
+            f"Vault moved to {self._vault.path}"
+            if moving
+            else f"Vault will be created at {self._vault.path}"
+        )
+        log.info("vault location is now %s (moved=%s)", self._vault.path, moving)
+        return True
+
+    def _adopt_vault_path(self, status_message: str, persist: bool = True) -> None:
+        """Settle everything that follows the vault living somewhere new."""
+        if persist:
+            # An explicit choice in the UI is meant to stick, even in a --vault run.
+            self._settings.vault_path = str(self._vault.path)
+            self._settings.save()
+        # The single-instance key is derived from the path, so the guard has to
+        # follow: otherwise it defends a vault this window no longer has open.
+        if self._instance_guard is not None and not self._instance_guard.rebind(
+            instance_key(self._vault.path)
+        ):
+            QMessageBox.warning(
+                self,
+                "Another copy has this vault",
+                f"{self._vault.path}\n\nis already open in another window. Two copies of "
+                "one vault can overwrite each other's changes — close one of them.",
+            )
         self._unlock_page.set_vault_path(self._vault.path)
         self._status_label.setToolTip(str(self._vault.path))
         if self.locked:
             self._status_label.setText(f"Locked · {self._vault.path.name}")
-        self.statusBar().showMessage(
-            f"Vault moved to {self._vault.path}" if moving else f"Vault will be created at {self._vault.path}",
-            8000,
+        self.statusBar().showMessage(status_message, 8000)
+
+    def _import_existing_vault(self) -> None:
+        """First-run import: adopt a vault file the user already has."""
+        dialog = ImportVaultDialog(self._vault.path, self)
+        if dialog.exec() != ImportVaultDialog.DialogCode.Accepted:
+            return
+        source = dialog.source_path
+        if source is None:
+            return
+
+        copying = dialog.copy_into_place
+        try:
+            if copying:
+                self._vault.import_from(source)
+            else:
+                self._vault.point_at(source)
+        except (OSError, CryptoError, ValueError, FileExistsError) as exc:
+            QMessageBox.critical(
+                self,
+                "Could not import that vault",
+                f"{source}\n\n{exc}\n\nNothing has been changed.",
+            )
+            return
+
+        if copying:
+            message = f"Imported {source.name} — unlock it with its own master password"
+        else:
+            message = f"Opened {self._vault.path} — unlock it with its own master password"
+        # Copying leaves the location alone, so there is nothing new to persist.
+        self._adopt_vault_path(message, persist=not copying)
+        self._unlock_page.set_message(
+            "Vault imported. Unlock it with the master password it already had.", error=False
         )
-        log.info("vault location is now %s (moved=%s)", self._vault.path, moving)
-        return True
+        self._unlock_page.focus_password()
+        log.info("imported a vault from %s (copied=%s)", source, copying)
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(

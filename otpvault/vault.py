@@ -350,6 +350,69 @@ class Vault:
         self._restrict_permissions()
         return self.path
 
+    # ------------------------------------------------------------- adopting
+
+    @staticmethod
+    def inspect_file(path: Path | str) -> dict[str, object]:
+        """Describe a vault file on disk without unlocking it.
+
+        Used before importing, so a wrong file is refused with a clear reason
+        instead of being copied into place and failing at the password prompt.
+        Raises OSError if unreadable, VaultFormatError if it is not a vault.
+        """
+        path = Path(path)
+        raw = path.read_bytes()
+        details = dict(crypto.inspect(raw))
+        details["path"] = str(path)
+        details["file_bytes"] = len(raw)
+        return details
+
+    def import_from(self, source: Path | str, overwrite: bool = False) -> Path:
+        """Copy an existing vault file to this vault's location.
+
+        The source is left untouched — importing from a backup or a USB stick
+        should not consume it. The file is validated first, and written through
+        a temporary file so a half-copied vault never appears at the target.
+        """
+        if not self.locked:
+            raise VaultLocked("lock the vault before importing over it")
+        source = Path(source).expanduser()
+        if source.resolve() == self.path.resolve():
+            raise ValueError("that file is already this vault")
+        self.inspect_file(source)  # raises if it is not a usable vault
+        if self.path.exists() and not overwrite:
+            raise FileExistsError(f"{self.path} already exists")
+
+        raw = source.read_bytes()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + f".import{os.getpid()}")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+            try:
+                os.write(fd, raw)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, self.path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        self._restrict_permissions()
+        return self.path
+
+    def point_at(self, path: Path | str) -> Path:
+        """Adopt an existing vault file where it lies, moving nothing.
+
+        For a vault in a synced folder, this is what you want: `move_to` would
+        drag the file to a new home, and importing would duplicate it.
+        """
+        if not self.locked:
+            raise VaultLocked("lock the vault before pointing it elsewhere")
+        path = Path(path).expanduser()
+        self.inspect_file(path)  # refuse to point at something unusable
+        self.path = path
+        return self.path
+
     def export_copy(self, destination: Path | str) -> Path:
         """Write an encrypted backup copy of the current vault file."""
         destination = Path(destination)

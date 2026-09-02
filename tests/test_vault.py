@@ -301,3 +301,134 @@ def test_move_to_works_while_locked(vault_path: Path, tmp_path: Path) -> None:
     assert vault.path == target
     vault.unlock(PASSWORD)
     assert len(vault.entries) == 1
+
+
+# ---------------------------------------------------------------- importing
+
+
+def test_inspect_file_describes_a_vault(vault_path: Path) -> None:
+    vault = Vault(vault_path)
+    vault.create(PASSWORD)
+    vault.add(make_entry())
+
+    details = Vault.inspect_file(vault_path)
+    assert details["cipher"] == crypto.CIPHER
+    assert details["kdf"] == "scrypt"
+    assert details["version"] == crypto.VERSION
+    assert details["file_bytes"] == vault_path.stat().st_size
+
+
+@pytest.mark.parametrize("content", [b"", b"not json", b'{"magic": "something-else"}'])
+def test_inspect_file_rejects_things_that_are_not_vaults(tmp_path: Path, content: bytes) -> None:
+    impostor = tmp_path / "impostor.otpv"
+    impostor.write_bytes(content)
+    with pytest.raises(VaultFormatError):
+        Vault.inspect_file(impostor)
+
+
+def test_inspect_file_reports_a_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(OSError):
+        Vault.inspect_file(tmp_path / "nothing-here.otpv")
+
+
+def test_import_copies_a_vault_and_leaves_the_source_alone(tmp_path: Path) -> None:
+    source_dir = tmp_path / "usb"
+    source_dir.mkdir()
+    source = source_dir / "backup.otpv"
+    original = Vault(source)
+    original.create(PASSWORD)
+    original.add(make_entry())
+    original.lock()
+    before = source.read_bytes()
+
+    target = tmp_path / "app" / "vault.otpv"
+    imported = Vault(target)
+    assert imported.import_from(source) == target
+
+    assert source.read_bytes() == before, "the source must not be consumed"
+    assert target.read_bytes() == before
+    imported.unlock(PASSWORD)
+    assert [e.label for e in imported.entries] == ["GitHub — me@example.com"]
+
+
+def test_import_refuses_a_file_that_is_not_a_vault(tmp_path: Path) -> None:
+    junk = tmp_path / "holiday.jpg"
+    junk.write_bytes(b"\xff\xd8\xff\xe0 not a vault")
+    target = tmp_path / "vault.otpv"
+
+    with pytest.raises(VaultFormatError):
+        Vault(target).import_from(junk)
+    assert not target.exists(), "nothing should be written when the source is rejected"
+
+
+def test_import_will_not_clobber_an_existing_vault(vault_path: Path, tmp_path: Path) -> None:
+    existing = Vault(vault_path)
+    existing.create(PASSWORD)
+    existing.lock()
+    untouched = vault_path.read_bytes()
+
+    source = tmp_path / "other.otpv"
+    other = Vault(source)
+    other.create("a different password")
+    other.lock()
+
+    with pytest.raises(FileExistsError):
+        Vault(vault_path).import_from(source)
+    assert vault_path.read_bytes() == untouched
+
+    Vault(vault_path).import_from(source, overwrite=True)
+    assert vault_path.read_bytes() == source.read_bytes()
+
+
+def test_import_refuses_to_import_a_vault_onto_itself(vault_path: Path) -> None:
+    vault = Vault(vault_path)
+    vault.create(PASSWORD)
+    vault.lock()
+    with pytest.raises(ValueError):
+        vault.import_from(vault_path)
+
+
+def test_import_requires_a_locked_vault(vault_path: Path, tmp_path: Path) -> None:
+    source = tmp_path / "source.otpv"
+    Vault(source).create(PASSWORD)
+
+    open_vault = Vault(tmp_path / "open.otpv")
+    open_vault.create(PASSWORD)
+    with pytest.raises(VaultLocked):
+        open_vault.import_from(source)
+
+
+def test_import_leaves_no_temp_files(tmp_path: Path) -> None:
+    source = tmp_path / "source.otpv"
+    Vault(source).create(PASSWORD)
+    target_dir = tmp_path / "app"
+    target = target_dir / "vault.otpv"
+
+    Vault(target).import_from(source)
+    assert list(target_dir.iterdir()) == [target]
+
+
+def test_point_at_adopts_a_vault_without_moving_it(tmp_path: Path) -> None:
+    synced = tmp_path / "synced" / "vault.otpv"
+    synced.parent.mkdir()
+    original = Vault(synced)
+    original.create(PASSWORD)
+    original.add(make_entry())
+    original.lock()
+
+    app_vault = Vault(tmp_path / "default.otpv")
+    assert app_vault.point_at(synced) == synced
+    assert synced.is_file(), "the file stays where it was"
+    assert not (tmp_path / "default.otpv").exists()
+
+    app_vault.unlock(PASSWORD)
+    assert len(app_vault.entries) == 1
+
+
+def test_point_at_refuses_a_file_that_is_not_a_vault(tmp_path: Path) -> None:
+    junk = tmp_path / "notes.txt"
+    junk.write_text("shopping list", encoding="utf-8")
+    vault = Vault(tmp_path / "vault.otpv")
+    with pytest.raises(VaultFormatError):
+        vault.point_at(junk)
+    assert vault.path == tmp_path / "vault.otpv", "the path must not change on failure"

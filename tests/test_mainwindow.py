@@ -472,3 +472,161 @@ def test_settings_never_persist_a_cli_override(qapp, tmp_path: Path, monkeypatch
     finally:
         win._quitting = True  # noqa: SLF001
         win.close()
+
+
+# ------------------------------------------------------- importing at first run
+
+
+def make_foreign_vault(path: Path, password: str = "another-password-99") -> Path:
+    """A vault created elsewhere, as if copied from a backup or another machine."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    other = Vault(path)
+    other.create(password)
+    other.add(OtpEntry(issuer="Imported", account="from-backup", secret=SECRET))
+    other.add(OtpEntry(issuer="Also imported", account="second", secret=SECRET))
+    other.lock()
+    return path
+
+
+def stub_import_dialog(monkeypatch, source: Path | None, copy: bool = True, accepted: bool = True):
+    """Answer the import dialog without showing it."""
+    from otpvault.ui import mainwindow as mw
+
+    class FakeDialog:
+        DialogCode = mw.ImportVaultDialog.DialogCode
+
+        def __init__(self, target, parent=None):
+            self.target = target
+
+        def exec(self):
+            return self.DialogCode.Accepted if accepted else self.DialogCode.Rejected
+
+        @property
+        def source_path(self):
+            return source
+
+        @property
+        def copy_into_place(self):
+            return copy
+
+    monkeypatch.setattr(mw, "ImportVaultDialog", FakeDialog)
+
+
+def test_the_first_run_screen_offers_import(window, qapp) -> None:
+    page = window._unlock_page  # noqa: SLF001
+    assert page._import_row.isVisible()  # noqa: SLF001
+    assert page._import_button.isEnabled()  # noqa: SLF001
+
+
+def test_the_import_offer_disappears_once_a_vault_exists(window, qapp) -> None:
+    create_vault(window, qapp)
+    window.lock("you locked it")
+    qapp.processEvents()
+    assert not window._unlock_page._import_row.isVisible()  # noqa: SLF001
+
+
+def test_importing_copies_the_vault_and_unlocks_with_its_own_password(
+    window, qapp, monkeypatch, tmp_path: Path
+) -> None:
+    source = make_foreign_vault(tmp_path / "backup" / "old.otpv")
+    target = window._vault.path  # noqa: SLF001
+    stub_import_dialog(monkeypatch, source, copy=True)
+
+    window._import_existing_vault()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert target.is_file(), "the vault should have been copied into place"
+    assert source.is_file(), "the source must be left alone"
+    assert window._vault.path == target  # noqa: SLF001
+    assert window.locked, "an imported vault still needs its password"
+
+    page = window._unlock_page  # noqa: SLF001
+    assert "Unlock" in page._title.text()  # noqa: SLF001 - flipped out of create mode
+    page._password.setText("another-password-99")  # noqa: SLF001
+    page._submit()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert not window.locked
+    assert window._model.rowCount() == 2  # noqa: SLF001
+
+
+def test_importing_in_place_leaves_the_file_and_remembers_it(
+    window, qapp, monkeypatch, tmp_path: Path
+) -> None:
+    from otpvault.config import Settings as StoredSettings
+
+    source = make_foreign_vault(tmp_path / "synced" / "vault.otpv")
+    default_target = window._vault.path  # noqa: SLF001
+    stub_import_dialog(monkeypatch, source, copy=False)
+
+    window._import_existing_vault()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._vault.path == source  # noqa: SLF001
+    assert not default_target.exists(), "opening in place must not copy anything"
+    assert StoredSettings.load().resolved_vault_path() == source, "the location should stick"
+
+    page = window._unlock_page  # noqa: SLF001
+    page._password.setText("another-password-99")  # noqa: SLF001
+    page._submit()  # noqa: SLF001
+    qapp.processEvents()
+    assert not window.locked
+
+
+def test_cancelling_the_import_changes_nothing(window, qapp, monkeypatch, tmp_path: Path) -> None:
+    source = make_foreign_vault(tmp_path / "backup" / "old.otpv")
+    before = window._vault.path  # noqa: SLF001
+    stub_import_dialog(monkeypatch, source, accepted=False)
+
+    window._import_existing_vault()  # noqa: SLF001
+
+    assert window._vault.path == before  # noqa: SLF001
+    assert not before.exists()
+    assert window.locked
+
+
+def test_a_failed_import_reports_and_changes_nothing(
+    window, qapp, monkeypatch, tmp_path: Path
+) -> None:
+    junk = tmp_path / "not-a-vault.otpv"
+    junk.write_bytes(b"definitely not a vault")
+    before = window._vault.path  # noqa: SLF001
+    reported = stub_message_box(monkeypatch)
+    stub_import_dialog(monkeypatch, junk, copy=True)
+
+    window._import_existing_vault()  # noqa: SLF001
+
+    assert window._vault.path == before  # noqa: SLF001
+    assert not before.exists(), "a rejected import must not leave a file behind"
+    assert reported, "the user should have been told why"
+
+
+def test_importing_rekeys_the_single_instance_guard(
+    window, qapp, monkeypatch, tmp_path: Path
+) -> None:
+    """The guard is keyed on the vault path, so it has to follow an import."""
+    from otpvault.singleinstance import SingleInstance, instance_key
+
+    source = make_foreign_vault(tmp_path / "synced" / "vault.otpv")
+    original_path = window._vault.path  # noqa: SLF001
+    guard = SingleInstance(instance_key(original_path))
+    assert guard.try_acquire()
+    window._instance_guard = guard  # noqa: SLF001
+    released: list = []
+    try:
+        stub_import_dialog(monkeypatch, source, copy=False)
+        window._import_existing_vault()  # noqa: SLF001
+
+        assert guard.key == instance_key(source), "the guard should now defend the new path"
+        assert guard.is_primary
+
+        # A launch on the newly adopted vault is refused...
+        assert SingleInstance(instance_key(source)).try_acquire() is False
+        # ... while the path it no longer uses has been given up.
+        stale = SingleInstance(instance_key(original_path))
+        released.append(stale)
+        assert stale.try_acquire() is True, "the old key should have been released"
+    finally:
+        guard.release()
+        for instance in released:
+            instance.release()

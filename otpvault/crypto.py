@@ -182,6 +182,23 @@ def _parse(raw: bytes) -> tuple[KdfParams, bytes, bytes, bytes]:
     return params, nonce, ciphertext, aad
 
 
+def inspect(raw: bytes) -> dict[str, object]:
+    """Describe a vault file without needing the password.
+
+    Everything here comes from the authenticated header, so it is enough to
+    tell a real vault from a stray file before doing anything with it. Raises
+    VaultFormatError if the bytes are not a vault this version understands.
+    """
+    params, _nonce, ciphertext, _aad = _parse(raw)
+    return {
+        "version": VERSION,
+        "cipher": CIPHER,
+        "kdf": params.name,
+        "kdf_cost": params.n,
+        "ciphertext_bytes": len(ciphertext),
+    }
+
+
 def decrypt_with_key(raw: bytes, key: bytes | bytearray) -> tuple[bytes, KdfParams]:
     params, nonce, ciphertext, aad = _parse(raw)
     try:

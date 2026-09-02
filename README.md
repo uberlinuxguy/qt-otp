@@ -17,6 +17,10 @@ moment you lock your workstation.
   Nothing is written in the clear — not even issuer names.
 - **Password at startup.** The app opens on an unlock screen. Wrong guesses are
   slowed down after three tries.
+- **Bring an existing vault with you.** The first-run screen can import a vault
+  you already have — from a backup, or from another machine — either copying it
+  into place or opening it where it lies. See
+  [Importing an existing vault](#importing-an-existing-vault).
 - **You choose where the vault lives.** The create screen on first run offers the
   location before anything is written, and Tools → Settings can change it later,
   which moves the existing vault file to the new place. See
@@ -111,6 +115,36 @@ is what you want for a portable install on a USB stick alongside the vault.
 A synced folder (Nextcloud, Dropbox) works — the file is encrypted and safe to
 sync — but avoid writing to it from two machines at once.
 
+## Importing an existing vault
+
+If you already have a vault — a backup, or a copy from another machine — the
+first-run screen has an **Import…** button next to *Already have a vault?*
+
+![import an existing vault](docs/import-vault.png)
+
+The file is checked before anything happens: its header says whether it really
+is a qt-otp vault, and the dialog reports what it found (`version 1 ·
+AES-256-GCM · scrypt`) or why the file is unusable. Import stays disabled until
+a valid vault is selected, so a wrong file cannot be copied into place.
+
+Then pick what should happen to it:
+
+- **Copy it to ‹the configured location›** — for a backup or a file you were
+  sent. The original is left exactly where it was, and the copy is written
+  through a temporary file so a half-copied vault never appears.
+- **Open it where it is** — for a vault in a synced folder. Nothing is copied or
+  moved, and the location is remembered for next time.
+
+Either way the vault keeps the master password it already had; qt-otp cannot
+read it until you type that password. Nothing about the import touches the
+entries themselves — it is the same encrypted file, byte for byte.
+
+Once a vault exists the offer disappears, because there is nothing to import
+*into*. Note what Tools → Settings does instead: it **moves the vault you
+already have** to a new location, which is a different job from adopting a
+second vault. To switch to a different existing vault, move your current one out
+of the way first (or export a backup and point a fresh location at it).
+
 ## One instance per vault
 
 Starting the app a second time on the same vault does not open a second window:
@@ -150,9 +184,11 @@ Details worth knowing:
 ## Backups
 
 `Vault → Export encrypted backup…` copies the encrypted file as-is, so the copy
-needs the same master password. **There is no password recovery.** If you forget
-the master password the codes are gone — keep each service's recovery codes
-somewhere else.
+needs the same master password. To restore one, point a fresh install at it with
+[Import…](#importing-an-existing-vault) on the first-run screen.
+
+**There is no password recovery.** If you forget the master password the codes
+are gone — keep each service's recovery codes somewhere else.
 
 ## Layout
 
@@ -231,7 +267,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-175 tests, no display required (Qt runs offscreen):
+203 tests, no display required (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;
@@ -244,6 +280,9 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
   retry with a wrong password, re-unlock;
 - the icon: that the SVG ships inside the package, renders at every size, and
   that the locked variant is a desaturated version of the same artwork;
+- importing: that a real vault is described and adopted, a wrong file is refused
+  before anything is written, the source is never consumed, and the
+  single-instance guard follows the vault to its new path;
 - the vault location: moving a live vault, refusing to clobber another file
   without confirmation, keeping the old path when a move fails, and never
   persisting a `--vault` override;

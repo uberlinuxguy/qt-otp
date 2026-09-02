@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from .. import totp
 from ..config import IDLE_CHOICES, Settings
-from ..vault import OtpEntry
+from ..vault import CryptoError, OtpEntry, Vault
 from .styles import error_style, muted_style
 from .unlock import MIN_PASSWORD_LENGTH, password_strength
 
@@ -369,7 +370,145 @@ def ask_password(parent: QWidget | None, title: str, prompt: str) -> str | None:
 __all__ = [
     "ChangePasswordDialog",
     "EntryDialog",
+    "ImportVaultDialog",
     "SettingsDialog",
     "ask_password",
     "choose_vault_path",
 ]
+
+
+class ImportVaultDialog(QDialog):
+    """First-run import: adopt a vault file you already have.
+
+    Two honest choices, because they are genuinely different intents: copy a
+    backup into the app's own location, or open a vault where it already lives
+    (a synced folder, say) and leave it there.
+    """
+
+    def __init__(self, target_path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Import an existing vault")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._target = Path(target_path)
+        self._source: Path | None = None
+
+        layout = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Choose a vault file you already have — a backup, or a copy from "
+            "another machine. You will still need its own master password."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._path_field = QLineEdit()
+        self._path_field.setPlaceholderText("Path to a .otpv vault file")
+        self._path_field.textChanged.connect(self._on_path_changed)
+        row.addWidget(self._path_field, 1)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        row.addWidget(browse)
+        row_widget = QWidget()
+        row_widget.setLayout(row)
+        layout.addWidget(row_widget)
+
+        self._details = QLabel()
+        self._details.setWordWrap(True)
+        self._details.setStyleSheet(muted_style(self))
+        self._details.setMinimumHeight(34)
+        layout.addWidget(self._details)
+
+        self._copy_here = QRadioButton(f"Copy it to {self._target}")
+        self._copy_here.setChecked(True)
+        self._copy_here.setToolTip("The file you chose is left untouched")
+        layout.addWidget(self._copy_here)
+
+        self._open_in_place = QRadioButton("Open it where it is, and remember that location")
+        self._open_in_place.setToolTip("Right for a vault in a synced folder")
+        layout.addWidget(self._open_in_place)
+
+        self._error = QLabel()
+        self._error.setWordWrap(True)
+        self._error.setStyleSheet(error_style(self))
+        self._error.setMinimumHeight(30)
+        layout.addWidget(self._error)
+
+        self._buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._buttons.button(QDialogButtonBox.StandardButton.Open).setText("Import")
+        self._buttons.accepted.connect(self._on_accept)
+        self._buttons.rejected.connect(self.reject)
+        layout.addWidget(self._buttons)
+        self._set_import_enabled(False)
+
+    # ---------------------------------------------------------------- results
+
+    @property
+    def source_path(self) -> Path | None:
+        return self._source
+
+    @property
+    def copy_into_place(self) -> bool:
+        return self._copy_here.isChecked()
+
+    # -------------------------------------------------------------- internals
+
+    def _set_import_enabled(self, enabled: bool) -> None:
+        self._buttons.button(QDialogButtonBox.StandardButton.Open).setEnabled(enabled)
+
+    def _browse(self) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a vault file",
+            str(self._target.parent),
+            "Vault files (*.otpv);;All files (*)",
+        )
+        if chosen:
+            self._path_field.setText(chosen)
+
+    def _on_path_changed(self, text: str) -> None:
+        """Validate as they type, so a wrong file is caught before importing."""
+        self._error.clear()
+        self._details.clear()
+        self._source = None
+        candidate = text.strip().strip('"')
+        if not candidate:
+            self._set_import_enabled(False)
+            return
+
+        path = Path(candidate).expanduser()
+        try:
+            details = Vault.inspect_file(path)
+        except OSError as exc:
+            self._details.setText(f"Cannot read that file: {exc.strerror or exc}")
+            self._set_import_enabled(False)
+            return
+        except CryptoError as exc:
+            self._details.setText(f"Not a qt-otp vault: {exc}")
+            self._set_import_enabled(False)
+            return
+
+        self._source = path
+        self._details.setText(
+            f"A qt-otp vault, version {details['version']} · {details['cipher']} · "
+            f"{details['kdf']} · {details['file_bytes']} bytes"
+        )
+        self._set_import_enabled(True)
+
+    def _on_accept(self) -> None:
+        if self._source is None:
+            self._error.setText("Choose a vault file first.")
+            return
+        if self.copy_into_place and self._target.exists():
+            self._error.setText(
+                f"{self._target} already exists. Use Tools → Settings to change the "
+                "location, or open the vault where it is."
+            )
+            return
+        if not self.copy_into_place and self._source.resolve() == self._target.resolve():
+            # Nothing to do, but harmless: fall through as a normal open.
+            pass
+        self.accept()
