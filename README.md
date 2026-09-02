@@ -32,6 +32,9 @@ moment you lock your workstation.
   [One instance per vault](#one-instance-per-vault).
 - **Live codes.** Each row shows the current code and a countdown bar; the code
   turns amber under 10 s and red under 5 s.
+- **Right-click to fill it in for you.** Optional, off by default: a right-click
+  copies the code, hands focus back to the window you came from, pastes it and
+  presses Enter. See [Right-click auto-paste](#right-click-auto-paste).
 - **Click to copy.** Clicking anywhere on a row copies that row's code, and the
   status bar confirms it: `Copied the code for GitHub — you@example.com to the
   clipboard · clipboard clears in 20s`. The clipboard self-clears after 20 s
@@ -145,6 +148,51 @@ already have** to a new location, which is a different job from adopting a
 second vault. To switch to a different existing vault, move your current one out
 of the way first (or export a backup and point a fresh location at it).
 
+## Right-click auto-paste
+
+Turn on *Right-click a row to paste the code into the previous window and press
+Enter* in Tools → Settings and a right-click will:
+
+1. copy the code, as a left-click does;
+2. give the foreground back to the window that had it before you switched to
+   qt-otp;
+3. send Ctrl+V to it, once the foreground has actually moved;
+4. press Enter a moment later, to submit it.
+
+The status bar then says what happened and where — `Pasted the code for GitHub —
+you@example.com into Some App and pressed Enter` — because that is the one thing
+worth being sure about.
+
+**It types into, and submits, whatever window it hands focus to.** That window is
+the last one that was in front before you came to qt-otp, which is usually the
+login form you were filling in — but it is not guaranteed to be. Leave qt-otp
+open for an hour, click around elsewhere, and the remembered window may not be
+the one you have in mind; with Enter in the sequence, the code is not just typed
+somewhere unintended but sent. The status bar names the target, and the feature
+is off by default, precisely because it reaches outside the app.
+
+Each step is separate on purpose:
+
+- Enter is only sent if the paste itself succeeded — submitting a form that never
+  received the code would be worse than not submitting at all;
+- there is a short gap between them, so a field that reformats or validates what
+  it just received has finished before the form goes;
+- locking the vault or closing the window cancels anything still pending, so no
+  keystroke can arrive after you have walked away.
+
+Details:
+
+- Windows only. The checkbox is disabled elsewhere; the rest of the app is
+  unaffected.
+- The foreground window is sampled on a timer, because by the time qt-otp knows
+  it has been activated the window you came from is no longer the front one.
+  Sampling only runs while the vault is unlocked *and* the setting is on, and
+  the remembered window is forgotten when the vault locks.
+- Our own windows are never targets, nor is a window that has since closed. With
+  no usable target, a right-click just copies and says so.
+- The context menu (Copy, Copy URI, Edit, Delete) stays available on **Shift+F10**
+  or the menu key, which is unaffected by this setting.
+
 ## One instance per vault
 
 Starting the app a second time on the same vault does not open a second window:
@@ -177,6 +225,7 @@ Details worth knowing:
 | `Ctrl+E` | Edit selected code |
 | `Del` | Delete selected code |
 | `Ctrl+C` / `Enter` | Copy the selected code (or just click the row) |
+| `Shift+F10` | Context menu (always, even with auto-paste on) |
 | `Ctrl+F` | Search |
 | `Ctrl+L` | Lock now |
 | `Ctrl+Q` | Quit |
@@ -200,6 +249,7 @@ otpvault/
   lockwatch.py  session-lock / sleep / idle detection per platform
   config.py     QSettings-backed preferences (nothing sensitive)
   singleinstance.py  one copy per vault, and the focus handoff
+  autopaste.py  foreground tracking and the Ctrl+V handoff (Windows)
   ui/           unlock screen, code table, dialogs, icons
   resources/    qt-otp-icon.svg, rendered per size for the window, taskbar and tray
   selftest.py   post-build checks, run with --selftest
@@ -267,7 +317,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-203 tests, no display required (Qt runs offscreen):
+229 tests plus one that needs a real desktop, no display required for the rest (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;
@@ -280,6 +330,11 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
   retry with a wrong password, re-unlock;
 - the icon: that the SVG ships inside the package, renders at every size, and
   that the locked variant is a desaturated version of the same artwork;
+- right-click auto-paste: the foreground-tracking rules, that the paste waits
+  for focus to move and Enter waits for the paste, that Enter never follows a
+  failed paste, that locking or closing cancels a pending keystroke, that a
+  missing target degrades to copy-only, and that the keyboard context menu
+  still works;
 - importing: that a real vault is described and adopted, a wrong file is refused
   before anything is written, the source is never consumed, and the
   single-instance guard follows the vault to its new path;

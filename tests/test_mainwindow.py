@@ -630,3 +630,266 @@ def test_importing_rekeys_the_single_instance_guard(
         guard.release()
         for instance in released:
             instance.release()
+
+
+# ------------------------------------------------- right-click auto-paste
+
+
+def right_click_row(window, qapp, row: int, column: int = CodeTableModel.COL_NAME) -> None:
+    """Send a real mouse context-menu event at that row."""
+    from PySide6.QtGui import QContextMenuEvent
+
+    view = window._table  # noqa: SLF001
+    rect = view.visualRect(window._proxy.index(row, column))  # noqa: SLF001
+    assert not rect.isEmpty(), "row is not laid out"
+    local = rect.center()
+    event = QContextMenuEvent(
+        QContextMenuEvent.Reason.Mouse, local, view.viewport().mapToGlobal(local)
+    )
+    view.contextMenuEvent(event)
+    qapp.processEvents()
+
+
+def stub_autopaste(monkeypatch, target: int = 4242, title: str = "Notepad", focus_ok: bool = True,
+                   paste_ok: bool = True, enter_ok: bool = True, enter_delay_ms: int = 10) -> dict:
+    """Replace the Windows calls, so the sequencing can be checked anywhere."""
+    from otpvault import autopaste
+
+    calls: dict[str, object] = {"focused": [], "keys": []}
+
+    # The window reaches these through the module, so patching it is enough.
+    monkeypatch.setattr(autopaste, "is_supported", lambda: True)
+    monkeypatch.setattr(autopaste, "window_title", lambda hwnd: title)
+    monkeypatch.setattr(autopaste, "FOCUS_SETTLE_MS", 10)
+    monkeypatch.setattr(autopaste, "ENTER_DELAY_MS", enter_delay_ms)
+
+    def fake_focus(hwnd):
+        calls["focused"].append(hwnd)
+        return focus_ok
+
+    def fake_paste():
+        calls["keys"].append("paste")
+        return paste_ok
+
+    def fake_enter():
+        calls["keys"].append("enter")
+        return enter_ok
+
+    monkeypatch.setattr(autopaste, "focus_window", fake_focus)
+    monkeypatch.setattr(autopaste, "send_paste", fake_paste)
+    monkeypatch.setattr(autopaste, "send_enter", fake_enter)
+    monkeypatch.setattr(autopaste, "is_usable_target", lambda hwnd: bool(hwnd))
+    return calls
+
+
+def enable_auto_paste(window, target: int = 4242) -> None:
+    window._settings.right_click_auto_paste = True  # noqa: SLF001
+    window._table.set_auto_paste(True)  # noqa: SLF001
+    tracker = window._foreground_tracker  # noqa: SLF001
+    tracker._is_usable = lambda hwnd: bool(hwnd)  # noqa: SLF001
+    tracker._provider = lambda: target  # noqa: SLF001
+    tracker.sample()
+
+
+def test_right_click_opens_the_menu_when_auto_paste_is_off(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    opened: list = []
+    monkeypatch.setattr(window, "_show_context_menu", lambda pos: opened.append(pos))
+
+    right_click_row(window, qapp, 0)
+
+    assert opened, "the context menu should still be the default behaviour"
+
+
+def test_right_click_pastes_into_the_previous_window_when_enabled(
+    window, qapp, monkeypatch, pump
+) -> None:
+    from PySide6.QtGui import QGuiApplication
+
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, target=4242, title="Notepad")
+    enable_auto_paste(window, target=4242)
+    menus: list = []
+    monkeypatch.setattr(window, "_show_context_menu", lambda pos: menus.append(pos))
+
+    expected = code_at(window, 0)
+    right_click_row(window, qapp, 0)
+
+    assert not menus, "auto-paste replaces the context menu on a mouse right-click"
+    assert QGuiApplication.clipboard().text() == expected, "the code must reach the clipboard"
+    assert calls["focused"] == [4242], "focus should have gone back to the other window"
+
+    pump(300)  # the paste is sent after the foreground settles, then Enter
+    assert calls["keys"] == ["paste", "enter"], "the code should be pasted and submitted"
+    assert window.statusBar().currentMessage() == (
+        "Pasted the code for GitHub — me@example.com into Notepad and pressed Enter"
+    )
+
+
+def test_the_paste_waits_for_focus_to_settle(window, qapp, monkeypatch) -> None:
+    """Sending keys before the foreground moves would type into our own window."""
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch)
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    assert calls["focused"], "focus is handed over first"
+    assert calls["keys"] == [], "the keystrokes must not be sent in the same turn"
+
+
+def test_no_target_means_copy_only(window, qapp, monkeypatch) -> None:
+    from PySide6.QtGui import QGuiApplication
+
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch)
+    enable_auto_paste(window, target=0)  # nothing worth pasting into
+
+    expected = code_at(window, 0)
+    right_click_row(window, qapp, 0)
+
+    assert QGuiApplication.clipboard().text() == expected, "copying still happens"
+    assert calls["focused"] == []
+    assert "no other window" in window.statusBar().currentMessage()
+
+
+def test_a_refused_focus_change_is_reported(window, qapp, monkeypatch, pump) -> None:
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, focus_ok=False, title="Some App")
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    pump(200)
+
+    assert calls["keys"] == [], "never send keys if focus did not move"
+    assert "could not switch to Some App" in window.statusBar().currentMessage()
+
+
+def test_a_failed_paste_is_reported(window, qapp, monkeypatch, pump) -> None:
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, paste_ok=False, title="Some App")
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    pump(300)
+
+    assert "could not paste into Some App" in window.statusBar().currentMessage()
+    assert calls["keys"] == ["paste"], (
+        "Enter must not follow a failed paste: it would submit a form that never "
+        "received the code"
+    )
+
+
+def test_enter_follows_the_paste_as_a_separate_step(window, qapp, monkeypatch, pump) -> None:
+    """A field that reformats what it receives needs a beat before submitting."""
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    # A long Enter delay, so the gap between the two steps is observable.
+    calls = stub_autopaste(monkeypatch, enter_delay_ms=400)
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    pump(120)
+    assert calls["keys"] == ["paste"], "Enter should not ride along with the paste"
+    pump(600)
+    assert calls["keys"] == ["paste", "enter"]
+
+
+def test_a_failed_enter_still_reports_the_paste(window, qapp, monkeypatch, pump) -> None:
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, enter_ok=False, title="Some App")
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    pump(300)
+
+    assert calls["keys"] == ["paste", "enter"]
+    message = window.statusBar().currentMessage()
+    assert "Pasted the code" in message and "could not press Enter" in message
+
+
+def test_the_keyboard_context_menu_still_works_with_auto_paste_on(
+    window, qapp, monkeypatch
+) -> None:
+    """Shift+F10 must keep Edit and Delete reachable."""
+    from PySide6.QtGui import QContextMenuEvent
+
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch)
+    enable_auto_paste(window)
+    opened: list = []
+    monkeypatch.setattr(window, "_show_context_menu", lambda pos: opened.append(pos))
+
+    view = window._table  # noqa: SLF001
+    view.setCurrentIndex(window._proxy.index(0, 0))  # noqa: SLF001
+    local = view.visualRect(window._proxy.index(0, 0)).center()  # noqa: SLF001
+    view.contextMenuEvent(
+        QContextMenuEvent(
+            QContextMenuEvent.Reason.Keyboard, local, view.viewport().mapToGlobal(local)
+        )
+    )
+    qapp.processEvents()
+
+    assert opened, "a keyboard request should open the menu, not paste"
+    assert calls["focused"] == []
+
+
+def test_locking_cancels_a_pending_paste(window, qapp, monkeypatch, pump) -> None:
+    """Nothing should be typed into another window after the vault locks."""
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, enter_delay_ms=400)
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    window.lock("you locked it")
+    qapp.processEvents()
+    pump(600)
+
+    assert calls["keys"] == [], "a locked vault must not send keystrokes"
+
+
+def test_closing_cancels_a_pending_paste(window, qapp, monkeypatch, pump) -> None:
+    """A pending step must not fire keystrokes after the window is gone."""
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    calls = stub_autopaste(monkeypatch, enter_delay_ms=400)
+    enable_auto_paste(window)
+
+    right_click_row(window, qapp, 0)
+    window._quitting = True  # noqa: SLF001
+    window.close()
+    qapp.processEvents()
+    pump(600)
+
+    assert calls["keys"] == []
+
+
+def test_the_tracker_only_runs_while_unlocked_and_enabled(window, qapp) -> None:
+    import sys
+
+    from otpvault import autopaste
+
+    if not autopaste.is_supported():
+        pytest.skip("auto-paste, and so the tracker, is Windows-only")
+    assert sys.platform == "win32"
+
+    create_vault(window, qapp)
+    tracker = window._foreground_tracker  # noqa: SLF001
+    assert not tracker.running, "nothing to watch while the feature is off"
+
+    window._settings.right_click_auto_paste = True  # noqa: SLF001
+    window._sync_foreground_tracker()  # noqa: SLF001
+    assert tracker.running, "the tracker should follow the setting"
+
+    window.lock("you locked it")
+    qapp.processEvents()
+    assert not tracker.running, "a locked vault has nothing to paste"
+    assert tracker.last_external_window() == 0, "the remembered window is dropped on lock"

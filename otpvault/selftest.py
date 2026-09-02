@@ -166,6 +166,27 @@ def check_single_instance() -> str:
     return f"claimed, defended and released {key[:24]}…"
 
 
+def check_auto_paste_plumbing() -> str:
+    """The Windows calls behind right-click auto-paste resolve and answer.
+
+    Deliberately sends no keystrokes and changes no focus: a self-test must not
+    type into whatever window happens to be in front.
+    """
+    from . import autopaste
+
+    if not autopaste.is_supported():
+        return "not applicable on this platform"
+    foreground = autopaste.current_foreground_window()
+    if not isinstance(foreground, int):
+        raise AssertionError("could not read the foreground window")
+    # Exercises the ctypes bindings without acting on anything.
+    autopaste.window_title(foreground)
+    autopaste.is_usable_target(foreground)
+    if autopaste.focus_window(0) or autopaste.focus_window(0x7FFFFFFF):
+        raise AssertionError("a dead window handle was accepted as a focus target")
+    return "foreground query and window checks working (no keys sent)"
+
+
 def check_vault_location() -> str:
     from .config import Settings
 
@@ -185,6 +206,7 @@ CHECKS = (
     ("lock_watcher", check_lock_watcher),
     ("main_window", check_main_window),
     ("single_instance", check_single_instance),
+    ("auto_paste_plumbing", check_auto_paste_plumbing),
     ("vault_location", check_vault_location),
 )
 

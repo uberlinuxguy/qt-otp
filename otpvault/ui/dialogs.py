@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import totp
+from .. import autopaste, totp
 from ..config import IDLE_CHOICES, Settings
 from ..vault import CryptoError, OtpEntry, Vault
 from .styles import error_style, muted_style
@@ -296,6 +296,23 @@ class SettingsDialog(QDialog):
         self._hide_codes.setChecked(settings.hide_codes_until_hover)
         layout.addWidget(self._hide_codes)
 
+        self._auto_paste = QCheckBox(
+            "Right-click a row to paste the code into the previous window and press Enter"
+        )
+        self._auto_paste.setChecked(settings.right_click_auto_paste and autopaste.is_supported())
+        if autopaste.is_supported():
+            self._auto_paste.setToolTip(
+                "Copies the code, returns focus to the window you came from, sends Ctrl+V "
+                "and then Enter to submit it.\n"
+                "Enter submits whatever that window is, so make sure it is the one you "
+                "meant — the status bar names it.\n"
+                "The context menu stays available on Shift+F10."
+            )
+        else:
+            self._auto_paste.setEnabled(False)
+            self._auto_paste.setToolTip("Only available on Windows")
+        layout.addWidget(self._auto_paste)
+
         note = QLabel(
             "Changing the vault file moves the existing vault to the new location. "
             "Workstation-lock detection uses native session notifications where "
@@ -334,6 +351,7 @@ class SettingsDialog(QDialog):
             clipboard_clear_seconds=self._clipboard.value(),
             minimize_to_tray=self._tray.isChecked(),
             hide_codes_until_hover=self._hide_codes.isChecked(),
+            right_click_auto_paste=self._auto_paste.isChecked(),
             vault_path=str(self._vault_path),
         )
 

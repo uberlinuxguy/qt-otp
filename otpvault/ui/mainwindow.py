@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import APP_DISPLAY_NAME, __version__
+from .. import APP_DISPLAY_NAME, __version__, autopaste
 from ..config import Settings
 from ..lockwatch import SessionWatcher
 from ..singleinstance import SingleInstance, instance_key, raise_to_foreground
@@ -91,6 +91,21 @@ class MainWindow(QMainWindow):
         self._clipboard_timer.setSingleShot(True)
         self._clipboard_timer.timeout.connect(self._clear_clipboard)
 
+        # Auto-paste runs in three steps (focus, paste, Enter) with a wait
+        # between each. The timers belong to the window so they cannot outlive
+        # it and send keystrokes into whatever is in front later on.
+        self._pending_paste: tuple[str, str] | None = None
+        self._paste_timer = QTimer(self)
+        self._paste_timer.setSingleShot(True)
+        self._paste_timer.timeout.connect(self._finish_auto_paste)
+        self._enter_timer = QTimer(self)
+        self._enter_timer.setSingleShot(True)
+        self._enter_timer.timeout.connect(self._submit_auto_paste)
+
+        # Samples the foreground window so a right-click can hand the code back
+        # to whatever the user was working in.
+        self._foreground_tracker = autopaste.ForegroundTracker(self)
+
         self._watcher = SessionWatcher(
             idle_seconds=settings.idle_lock_seconds,
             watch_session_lock=settings.lock_on_session_lock,
@@ -142,7 +157,9 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(CodeTableModel.COL_TIMER, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(CodeTableModel.COL_TIMER, 96)
         self._table.copyRequested.connect(self._copy_index)
-        self._table.customContextMenuRequested.connect(self._show_context_menu)
+        self._table.contextMenuRequested.connect(self._show_context_menu)
+        self._table.autoPasteRequested.connect(self._auto_paste)
+        self._table.set_auto_paste(self._auto_paste_active())
         self._table.selectionModel().selectionChanged.connect(self._update_action_state)
         layout.addWidget(self._table, 1)
 
@@ -302,6 +319,7 @@ class MainWindow(QMainWindow):
         self._reload_model()
         self._refresh_timer.start()
         self._watcher.start()
+        self._sync_foreground_tracker()
         self._table.setFocus()
         if self._model.rowCount() and self._table.currentIndex().row() < 0:
             self._table.selectRow(0)
@@ -324,6 +342,9 @@ class MainWindow(QMainWindow):
             return
         self._refresh_timer.stop()
         self._watcher.stop()
+        self._cancel_pending_paste()
+        self._foreground_tracker.stop()
+        self._foreground_tracker.forget()
         self._clear_clipboard()
         self._search.clear()
         self._model.clear()
@@ -466,14 +487,22 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- copying
 
-    def _copy_index(self, index: QModelIndex) -> None:
+    def _code_at(self, index: QModelIndex) -> tuple[OtpEntry, str] | None:
+        """The entry and its current code, or None if the row has neither."""
         if not index.isValid() or self.locked:
-            return
+            return None
         source = self._proxy.mapToSource(index)
         code = self._model.data(source.siblingAtColumn(CodeTableModel.COL_CODE), CodeTableModel.CodeRole)
         entry = self._model.entry_at(source.row())
         if not code or code == "error" or entry is None:
+            return None
+        return entry, str(code)
+
+    def _copy_index(self, index: QModelIndex) -> None:
+        found = self._code_at(index)
+        if found is None:
             return
+        entry, code = found
         self._set_clipboard(str(code))
         seconds = self._settings.clipboard_clear_seconds
         suffix = f" · clipboard clears in {seconds}s" if seconds else ""
@@ -481,6 +510,93 @@ class MainWindow(QMainWindow):
             f"Copied the code for {entry.label} to the clipboard{suffix}", COPY_MESSAGE_MS
         )
         self._watcher.note_activity()
+
+    def _auto_paste_active(self) -> bool:
+        return bool(self._settings.right_click_auto_paste) and autopaste.is_supported()
+
+    def _sync_foreground_tracker(self) -> None:
+        """Only watch the foreground while it could actually be needed."""
+        if self._auto_paste_active() and not self.locked:
+            self._foreground_tracker.start()
+        else:
+            self._foreground_tracker.stop()
+
+    @Slot(QModelIndex)
+    def _auto_paste(self, index: QModelIndex) -> None:
+        """Copy the code, hand focus back to the previous window, paste it there."""
+        found = self._code_at(index)
+        if found is None:
+            return
+        entry, code = found
+        self._set_clipboard(code)
+        self._watcher.note_activity()
+
+        if not autopaste.is_supported():
+            self.statusBar().showMessage(
+                f"Copied the code for {entry.label} — auto-paste needs Windows", COPY_MESSAGE_MS
+            )
+            return
+
+        target = self._foreground_tracker.last_external_window()
+        if not target:
+            self.statusBar().showMessage(
+                f"Copied the code for {entry.label} — no other window to paste into",
+                COPY_MESSAGE_MS,
+            )
+            return
+
+        title = autopaste.window_title(target) or "the previous window"
+        if not autopaste.focus_window(target):
+            self.statusBar().showMessage(
+                f"Copied the code for {entry.label} — could not switch to {title}",
+                COPY_MESSAGE_MS,
+            )
+            return
+        # Windows needs a moment to move the foreground before keys will land.
+        self._pending_paste = (entry.label, title)
+        self._paste_timer.start(autopaste.FOCUS_SETTLE_MS)
+
+    def _cancel_pending_paste(self) -> None:
+        self._paste_timer.stop()
+        self._enter_timer.stop()
+        self._pending_paste = None
+
+    @Slot()
+    def _finish_auto_paste(self) -> None:
+        if self._pending_paste is None or self.locked:
+            # Locked in the meantime: whatever is in front should not be typed into.
+            self._cancel_pending_paste()
+            return
+        label, title = self._pending_paste
+        if not autopaste.send_paste():
+            self._pending_paste = None
+            self.statusBar().showMessage(
+                f"Copied the code for {label} — could not paste into {title}", COPY_MESSAGE_MS
+            )
+            return
+        log.info("pasted a code into %r", title)
+        # Enter goes in a second step, and only now that the paste has landed:
+        # submitting a form that never received the code would be worse than
+        # not submitting at all.
+        self._enter_timer.start(autopaste.ENTER_DELAY_MS)
+
+    @Slot()
+    def _submit_auto_paste(self) -> None:
+        if self._pending_paste is None:
+            return
+        label, title = self._pending_paste
+        self._pending_paste = None
+        # Named on purpose: the user should be able to see where the code went,
+        # and that this step also pressed Enter there.
+        if autopaste.send_enter():
+            self.statusBar().showMessage(
+                f"Pasted the code for {label} into {title} and pressed Enter", COPY_MESSAGE_MS
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Pasted the code for {label} into {title} — but could not press Enter",
+                COPY_MESSAGE_MS,
+            )
 
     def _copy_uri(self) -> None:
         entry = self._selected_entry()
@@ -700,6 +816,8 @@ class MainWindow(QMainWindow):
         self._watcher.set_watch_session_lock(self._settings.lock_on_session_lock)
         self._watcher.set_watch_suspend(self._settings.lock_on_suspend)
         self._model.set_hide_codes(self._settings.hide_codes_until_hover)
+        self._table.set_auto_paste(self._auto_paste_active())
+        self._sync_foreground_tracker()
         if self._settings.minimize_to_tray and self._tray is None:
             self._build_tray()
         elif not self._settings.minimize_to_tray and self._tray is not None:
@@ -768,6 +886,8 @@ class MainWindow(QMainWindow):
             return
         self._refresh_timer.stop()
         self._clear_clipboard()
+        self._cancel_pending_paste()
+        self._foreground_tracker.stop()
         self._watcher.shutdown()
         if not self._vault.locked:
             self._vault.lock()

@@ -7,6 +7,7 @@ import time
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
+    QPoint,
     QRectF,
     QSize,
     QSortFilterProxyModel,
@@ -248,6 +249,8 @@ class CodeTableView(QTableView):
 
     copyRequested = Signal(QModelIndex)
     editRequested = Signal(QModelIndex)
+    autoPasteRequested = Signal(QModelIndex)
+    contextMenuRequested = Signal(QPoint)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -262,7 +265,10 @@ class CodeTableView(QTableView):
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(36)
         self.horizontalHeader().setHighlightSections(False)
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # DefaultContextMenu (not CustomContextMenu) so contextMenuEvent can
+        # tell a mouse right-click from the keyboard's context-menu request.
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+        self._auto_paste = False
         self.entered.connect(self._on_entered)
         # A single left-click anywhere on a row copies that row's code. `clicked`
         # covers double-clicks too, so it is the only connection needed.
@@ -283,6 +289,28 @@ class CodeTableView(QTableView):
         if isinstance(model, QSortFilterProxyModel):
             row = model.mapToSource(index).row()
         source.set_revealed_row(row)
+
+    def set_auto_paste(self, enabled: bool) -> None:
+        """When on, a right-click pastes instead of opening the menu."""
+        self._auto_paste = bool(enabled)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt API
+        from PySide6.QtGui import QContextMenuEvent
+
+        # Round-trip through global coordinates: whether the event arrives on
+        # the view or its viewport, indexAt() wants viewport coordinates.
+        position = self.viewport().mapFromGlobal(event.globalPos())
+        index = self.indexAt(position)
+        by_mouse = event.reason() == QContextMenuEvent.Reason.Mouse
+        if self._auto_paste and by_mouse and index.isValid():
+            self.setCurrentIndex(index)
+            self.autoPasteRequested.emit(index)
+            event.accept()
+            return
+        # Keyboard requests (Shift+F10, the menu key) always get the menu, so
+        # Edit and Delete stay reachable while auto-paste is on.
+        self.contextMenuRequested.emit(position)
+        event.accept()
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt API
         source = self._source_model()

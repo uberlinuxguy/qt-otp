@@ -45,6 +45,7 @@ class Settings:
     clipboard_clear_seconds: int = 20
     minimize_to_tray: bool = True
     hide_codes_until_hover: bool = False
+    right_click_auto_paste: bool = False
     vault_path: str = ""
 
     @classmethod
