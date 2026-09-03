@@ -187,6 +187,30 @@ def check_auto_paste_plumbing() -> str:
     return "foreground query and window checks working (no keys sent)"
 
 
+def check_qr_decoding() -> str:
+    """A QR round trip, which needs the zxing-cpp extension in the bundle."""
+    from PySide6.QtGui import QImage
+
+    from . import qrscan
+
+    if not qrscan.is_available():
+        raise AssertionError(f"QR decoding unavailable: {qrscan.unavailable_reason()}")
+
+    import zxingcpp
+
+    uri = f"otpauth://totp/Selftest:me?secret={RFC_SECRET}&issuer=Selftest"
+    barcode = zxingcpp.create_barcode(uri, zxingcpp.BarcodeFormat.QRCode)
+    matrix = zxingcpp.write_barcode_to_image(barcode, scale=6)
+    height, width = matrix.shape[0], matrix.shape[1]
+    image = QImage(
+        bytes(memoryview(matrix)), width, height, width, QImage.Format.Format_Grayscale8
+    ).copy()
+    found = qrscan.find_otpauth_uris(image)
+    if found != [uri]:
+        raise AssertionError(f"a generated QR code did not decode back: {found}")
+    return f"encoded and decoded a {width}x{height} QR code"
+
+
 def check_vault_location() -> str:
     from .config import Settings
 
@@ -207,6 +231,7 @@ CHECKS = (
     ("main_window", check_main_window),
     ("single_instance", check_single_instance),
     ("auto_paste_plumbing", check_auto_paste_plumbing),
+    ("qr_decoding", check_qr_decoding),
     ("vault_location", check_vault_location),
 )
 

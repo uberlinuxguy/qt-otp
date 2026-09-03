@@ -25,10 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import APP_DISPLAY_NAME, __version__, autopaste
+from .. import APP_DISPLAY_NAME, __version__, autopaste, qrscan
 from ..config import Settings
 from ..lockwatch import SessionWatcher
 from ..singleinstance import SingleInstance, instance_key, raise_to_foreground
+from ..totp import InvalidSecret
 from ..vault import BadPassword, CryptoError, OtpEntry, Vault, VaultFormatError
 from . import icons
 from .codes import CodeFilterProxy, CodeTableModel, CodeTableView, CountdownDelegate
@@ -39,6 +40,7 @@ from .dialogs import (
     SettingsDialog,
     choose_vault_path,
 )
+from .screengrab import select_region
 from .styles import muted_style
 from .unlock import UnlockPage
 
@@ -173,7 +175,18 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         self._action_add = QAction("&Add code…", self)
         self._action_add.setShortcut(QKeySequence.StandardKey.New)
-        self._action_add.triggered.connect(self._add_entry)
+        self._action_add.triggered.connect(lambda: self._add_entry())
+
+        self._action_scan = QAction("Add by &scanning a QR code…", self)
+        self._action_scan.setShortcut("Ctrl+Shift+N")
+        self._action_scan.triggered.connect(self._scan_qr_code)
+        if not qrscan.is_available():
+            self._action_scan.setEnabled(False)
+            self._action_scan.setToolTip(f"QR decoding is unavailable ({qrscan.unavailable_reason()})")
+        else:
+            self._action_scan.setToolTip(
+                "Select the part of the screen showing a QR code (Ctrl+Shift+N)"
+            )
 
         self._action_edit = QAction("&Edit code…", self)
         self._action_edit.setShortcut("Ctrl+E")
@@ -219,6 +232,7 @@ class MainWindow(QMainWindow):
 
         self._vault_actions = [
             self._action_add,
+            self._action_scan,
             self._action_edit,
             self._action_delete,
             self._action_copy,
@@ -233,6 +247,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         toolbar.addAction(self._action_add)
+        toolbar.addAction(self._action_scan)
         toolbar.addAction(self._action_edit)
         toolbar.addAction(self._action_delete)
         toolbar.addSeparator()
@@ -247,6 +262,7 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         vault_menu = self.menuBar().addMenu("&Vault")
         vault_menu.addAction(self._action_add)
+        vault_menu.addAction(self._action_scan)
         vault_menu.addAction(self._action_edit)
         vault_menu.addAction(self._action_delete)
         vault_menu.addSeparator()
@@ -430,10 +446,11 @@ class MainWindow(QMainWindow):
         if proxy_index.isValid():
             self._table.setCurrentIndex(proxy_index)
 
-    def _add_entry(self) -> None:
+    def _add_entry(self, prefill: OtpEntry | None = None) -> None:
+        """Add a code by hand, or starting from values read off a QR code."""
         if self.locked:
             return
-        dialog = EntryDialog(self)
+        dialog = EntryDialog(self, prefill=prefill)
         if dialog.exec() != EntryDialog.DialogCode.Accepted:
             return
         entry = dialog.entry()
@@ -445,6 +462,110 @@ class MainWindow(QMainWindow):
         self._reload_model()
         self._select_entry(entry.id)
         self.statusBar().showMessage(f"Added {entry.label}", 4000)
+
+    def _scan_qr_code(self) -> None:
+        """Read an account off a QR code shown anywhere on screen."""
+        if self.locked or not qrscan.is_available():
+            return
+
+        # Get out of the way: the QR is usually behind this window.
+        was_visible = self.isVisible()
+        self.hide()
+        QApplication.processEvents()
+        try:
+            image = select_region()
+        finally:
+            if was_visible:
+                self.show()
+                self.activate()
+
+        if image is None or image.isNull():
+            self.statusBar().showMessage("Nothing captured", 4000)
+            return
+
+        try:
+            uris = qrscan.find_otpauth_uris(image)
+            migration = [] if uris else qrscan.has_migration_payload(image)
+        except qrscan.QrScanError as exc:
+            QMessageBox.critical(self, "Could not read the screen", str(exc))
+            return
+
+        if not uris:
+            self._report_no_qr_found(image, bool(migration))
+            return
+        if len(uris) == 1:
+            self._add_scanned_uri(uris[0])
+        else:
+            self._add_scanned_uris(uris)
+
+    def _report_no_qr_found(self, image, migration: bool) -> None:
+        if migration:
+            QMessageBox.information(
+                self,
+                "That is a Google Authenticator export",
+                "The QR code holds a batch export (otpauth-migration://), which this app "
+                "cannot read.\n\nIn Google Authenticator, use the per-account QR instead: "
+                "tap an account, then Export, and scan the single code it shows.",
+            )
+            return
+        QMessageBox.information(
+            self,
+            "No QR code found",
+            f"Nothing readable in that {image.width()}×{image.height()} pixel area.\n\n"
+            "A QR code needs a bit of room to be read: select it with a little margin "
+            "around it, and if it is shown small on the page, zoom in first.",
+        )
+
+    def _add_scanned_uri(self, uri: str) -> None:
+        """One code: open the add dialog prefilled, so it can be checked first."""
+        try:
+            scanned = OtpEntry.from_uri(uri)
+        except (ValueError, InvalidSecret) as exc:
+            QMessageBox.warning(
+                self, "Could not use that QR code", f"The code was read, but: {exc}"
+            )
+            return
+        self._add_entry(prefill=scanned)
+
+    def _add_scanned_uris(self, uris: list[str]) -> None:
+        """Several codes in one shot: confirm the list, then add them all."""
+        scanned: list[OtpEntry] = []
+        rejected: list[str] = []
+        for uri in uris:
+            try:
+                scanned.append(OtpEntry.from_uri(uri))
+            except (ValueError, InvalidSecret) as exc:
+                rejected.append(str(exc))
+        if not scanned:
+            QMessageBox.warning(
+                self, "Could not use those QR codes", "\n".join(rejected) or "No usable accounts."
+            )
+            return
+
+        listing = "\n".join(f"  • {entry.label}" for entry in scanned)
+        note = f"\n\n{len(rejected)} could not be read." if rejected else ""
+        confirm = QMessageBox.question(
+            self,
+            f"Add {len(scanned)} accounts?",
+            f"Found {len(scanned)} accounts in that area:\n\n{listing}{note}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        added = 0
+        for entry in scanned:
+            try:
+                self._vault.add(entry)
+                added += 1
+            except OSError as exc:
+                QMessageBox.critical(self, "Could not save", f"The vault could not be written:\n{exc}")
+                break
+        self._reload_model()
+        if added:
+            self._select_entry(scanned[added - 1].id)
+        self.statusBar().showMessage(f"Added {added} scanned account(s)", 6000)
 
     def _edit_entry(self) -> None:
         entry = self._selected_entry()
@@ -645,6 +766,7 @@ class MainWindow(QMainWindow):
         unlocked = not self.locked
         has_selection = unlocked and self._table.currentIndex().isValid()
         self._action_add.setEnabled(unlocked)
+        self._action_scan.setEnabled(unlocked and qrscan.is_available())
         self._action_lock.setEnabled(unlocked)
         self._action_change_password.setEnabled(unlocked)
         self._action_export.setEnabled(unlocked and self._vault.exists)

@@ -8,9 +8,10 @@ moment you lock your workstation.
 
 ## What it does
 
-- **Many accounts, one file.** Add codes by hand or by pasting an
-  `otpauth://totp/...` URI from a QR code. Issuer, account, algorithm
-  (SHA1/SHA256/SHA512), digit count (6/7/8) and period are all per-entry.
+- **Many accounts, one file.** Add codes by scanning the QR code off your
+  screen, by pasting an `otpauth://totp/...` URI, or by hand. Issuer, account,
+  algorithm (SHA1/SHA256/SHA512), digit count (6/7/8) and period are all
+  per-entry. See [Adding an account by QR code](#adding-an-account-by-qr-code).
 - **Encrypted at rest.** The vault is AES-256-GCM; the key comes from your
   master password via scrypt (N=32768, r=8, p=1). The KDF header is
   authenticated, so nobody can edit the file to weaken the cost parameters.
@@ -148,6 +149,40 @@ already have** to a new location, which is a different job from adopting a
 second vault. To switch to a different existing vault, move your current one out
 of the way first (or export a backup and point a fresh location at it).
 
+## Adding an account by QR code
+
+Every service that gives you a setup key also shows a QR code containing the
+same thing. **Vault → Add by scanning a QR code…** (Ctrl+Shift+N) reads it off
+the screen instead of making you type the key.
+
+![selecting a QR code on screen](docs/qr-scan.png)
+
+The window gets out of the way, each screen freezes, and you drag a box around
+the code — or click once to use that whole screen. Esc or a right-click cancels.
+What is captured is the frozen pixels from the moment you asked, at full device
+resolution: a QR code needs every pixel it has, so nothing is scaled down.
+
+What happens next depends on what was in the box:
+
+- **One account** opens the Add dialog with the issuer, account, algorithm,
+  digits and period already filled in, so you can check it (and rename it)
+  before saving.
+- **Several accounts** — a page listing more than one code — are listed for
+  confirmation and then added together.
+- **No readable code** says so, including how big the area you selected was. QR
+  codes need a little room: include a margin, and zoom the page in if the code
+  is displayed small. A code shrunk below roughly two pixels per module cannot
+  be read by anything.
+- **A Google Authenticator batch export** (`otpauth-migration://`) is
+  recognised and explained rather than reported as "nothing found": it is a
+  protobuf blob this app does not read, so export the per-account codes
+  instead.
+- **A QR code that is not an account** — a URL, a wifi code — is ignored.
+
+Decoding is [zxing-cpp](https://pypi.org/project/zxing-cpp/); it is a hard
+dependency but the app degrades to manual entry if it is ever missing, with the
+menu item disabled and the reason in its tooltip.
+
 ## Right-click auto-paste
 
 Turn on *Right-click a row to paste the code into the previous window and press
@@ -222,6 +257,7 @@ Details worth knowing:
 | Key | Action |
 | --- | --- |
 | `Ctrl+N` | Add code |
+| `Ctrl+Shift+N` | Add by scanning a QR code on screen |
 | `Ctrl+E` | Edit selected code |
 | `Del` | Delete selected code |
 | `Ctrl+C` / `Enter` | Copy the selected code (or just click the row) |
@@ -249,8 +285,9 @@ otpvault/
   lockwatch.py  session-lock / sleep / idle detection per platform
   config.py     QSettings-backed preferences (nothing sensitive)
   singleinstance.py  one copy per vault, and the focus handoff
+  qrscan.py     reads otpauth:// URIs out of screen pixels
   autopaste.py  foreground tracking and the Ctrl+V handoff (Windows)
-  ui/           unlock screen, code table, dialogs, icons
+  ui/           unlock screen, code table, dialogs, icons, screen-region picker
   resources/    qt-otp-icon.svg, rendered per size for the window, taskbar and tray
   selftest.py   post-build checks, run with --selftest
 tests/          RFC 6238 vectors, crypto tamper cases, vault lifecycle
@@ -317,7 +354,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-229 tests plus one that needs a real desktop, no display required for the rest (Qt runs offscreen):
+263 tests plus one that needs a real desktop, no display required for the rest (Qt runs offscreen):
 
 - the full RFC 6238 vector table for all three hash algorithms, plus URI parsing;
 - wrong-password, tampered-ciphertext and KDF-downgrade rejection;
@@ -330,6 +367,11 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
   retry with a wrong password, re-unlock;
 - the icon: that the SVG ships inside the package, renders at every size, and
   that the locked variant is a desaturated version of the same artwork;
+- QR scanning: codes read off a rendered page, from a crop, several at once,
+  a non-account code ignored, a Google Authenticator export told apart, and the
+  point at which a shrunken code stops being readable; plus the region picker's
+  geometry, including that the captured pixels are exactly the un-dimmed
+  selection and that a scaled display captures real pixels;
 - right-click auto-paste: the foreground-tracking rules, that the paste waits
   for focus to move and Enter waits for the paste, that Enter never follows a
   failed paste, that locking or closing cancels a pending keystroke, that a

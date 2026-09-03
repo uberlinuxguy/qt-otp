@@ -11,6 +11,9 @@ license-files = ["LICENSE"]
 dependencies = [
     "PySide6>=6.6",
     "cryptography>=42.0",
+    # Reads QR codes off the screen when adding an account. Small wheel, and
+    # the app degrades to manual entry if it is ever missing.
+    "zxing-cpp>=2.0",
 ]
 
 [project.optional-dependencies]

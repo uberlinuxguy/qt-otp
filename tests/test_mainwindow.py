@@ -893,3 +893,208 @@ def test_the_tracker_only_runs_while_unlocked_and_enabled(window, qapp) -> None:
     qapp.processEvents()
     assert not tracker.running, "a locked vault has nothing to paste"
     assert tracker.last_external_window() == 0, "the remembered window is dropped on lock"
+
+
+# -------------------------------------------------- adding by scanning a QR
+
+
+def qr_screenshot(*uris):
+    """A pretend screen capture containing QR codes for those URIs."""
+    zxingcpp = pytest.importorskip("zxingcpp")
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    screen = QImage(900, 500, QImage.Format.Format_RGB32)
+    screen.fill(QColor("#fafafa"))
+    painter = QPainter(screen)
+    for index, uri in enumerate(uris):
+        barcode = zxingcpp.create_barcode(uri, zxingcpp.BarcodeFormat.QRCode)
+        matrix = zxingcpp.write_barcode_to_image(barcode, scale=6)
+        height, width = matrix.shape[0], matrix.shape[1]
+        qr = QImage(
+            bytes(memoryview(matrix)), width, height, width, QImage.Format.Format_Grayscale8
+        ).copy()
+        painter.drawImage(QRect(40 + index * 320, 60, qr.width(), qr.height()), qr)
+    painter.end()
+    return screen
+
+
+def stub_capture(monkeypatch, image) -> None:
+    """Answer the screen-region selector without showing an overlay."""
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(mw, "select_region", lambda: image)
+
+
+def auto_accept_entry_dialog(monkeypatch) -> list:
+    """Accept the Add dialog as-is, keeping whatever the scan prefilled."""
+    from otpvault.ui import mainwindow as mw
+
+    seen = []
+
+    class AcceptingDialog(mw.EntryDialog):
+        def exec(self):
+            seen.append(self)
+            self._on_accept()  # noqa: SLF001 - validate and build like a click on Save
+            return self.DialogCode.Accepted if self.result() else self.DialogCode.Rejected
+
+    monkeypatch.setattr(mw, "EntryDialog", AcceptingDialog)
+    return seen
+
+
+SCANNED_URI = (
+    "otpauth://totp/Scanned%20Co:scanned@example.com?secret=GEZDGNBVGY3TQOJQ"
+    "&issuer=Scanned%20Co&digits=8&period=60&algorithm=SHA256"
+)
+SECOND_SCANNED_URI = (
+    "otpauth://totp/Second:two@example.com?secret=GEZDGNBVGY3TQOJQ&issuer=Second"
+)
+
+
+def test_the_scan_action_exists_and_needs_an_unlocked_vault(window, qapp) -> None:
+    assert not window._action_scan.isEnabled(), "nothing to add to while locked"  # noqa: SLF001
+    create_vault(window, qapp)
+    from otpvault import qrscan
+
+    assert window._action_scan.isEnabled() == qrscan.is_available()  # noqa: SLF001
+
+
+def test_scanning_a_qr_code_prefills_and_adds_the_account(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    stub_capture(monkeypatch, qr_screenshot(SCANNED_URI))
+    dialogs = auto_accept_entry_dialog(monkeypatch)
+
+    window._scan_qr_code()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert dialogs, "the add dialog should have opened for review"
+    assert window._model.rowCount() == 1  # noqa: SLF001
+    added = window._vault.entries[0]  # noqa: SLF001
+    assert added.issuer == "Scanned Co"
+    assert added.account == "scanned@example.com"
+    assert added.digits == 8
+    assert added.period == 60
+    assert added.algorithm == "SHA256"
+    assert len(added.code()) == 8
+
+
+def test_the_scanned_entry_is_added_not_treated_as_an_edit(window, qapp, monkeypatch) -> None:
+    """A prefilled dialog must still save as a new account."""
+    create_vault(window, qapp)
+    add_sample_entries(window, qapp)
+    stub_capture(monkeypatch, qr_screenshot(SCANNED_URI))
+    auto_accept_entry_dialog(monkeypatch)
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert window._model.rowCount() == 3, "the existing two must survive"
+
+
+def test_several_codes_in_one_capture_are_offered_together(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    stub_capture(monkeypatch, qr_screenshot(SCANNED_URI, SECOND_SCANNED_URI))
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox, "question", lambda *args, **kwargs: mw.QMessageBox.StandardButton.Yes
+    )
+
+    window._scan_qr_code()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._model.rowCount() == 2  # noqa: SLF001
+    issuers = sorted(entry.issuer for entry in window._vault.entries)  # noqa: SLF001
+    assert issuers == ["Scanned Co", "Second"]
+    assert "scanned account" in window.statusBar().currentMessage()
+
+
+def test_declining_the_multiple_confirmation_adds_nothing(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    stub_capture(monkeypatch, qr_screenshot(SCANNED_URI, SECOND_SCANNED_URI))
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox, "question", lambda *args, **kwargs: mw.QMessageBox.StandardButton.Cancel
+    )
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert window._model.rowCount() == 0  # noqa: SLF001
+
+
+def test_a_capture_with_no_qr_code_says_so(window, qapp, monkeypatch) -> None:
+    from PySide6.QtGui import QColor, QImage
+
+    create_vault(window, qapp)
+    blank = QImage(300, 200, QImage.Format.Format_RGB32)
+    blank.fill(QColor("#ffffff"))
+    stub_capture(monkeypatch, blank)
+    told = []
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox, "information", lambda parent, title, text, *a, **k: told.append((title, text))
+    )
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert told and told[0][0] == "No QR code found"
+    assert "300×200" in told[0][1], "the message should say how big the area was"
+    assert window._model.rowCount() == 0  # noqa: SLF001
+
+
+def test_a_google_authenticator_export_gets_its_own_explanation(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    stub_capture(monkeypatch, qr_screenshot("otpauth-migration://offline?data=Ch4KCkhlbGxv"))
+    told = []
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox, "information", lambda parent, title, text, *a, **k: told.append((title, text))
+    )
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert told, "the user should be told what that QR actually was"
+    assert "Google Authenticator" in told[0][0]
+    assert "otpauth-migration" in told[0][1]
+
+
+def test_cancelling_the_capture_changes_nothing(window, qapp, monkeypatch) -> None:
+    create_vault(window, qapp)
+    stub_capture(monkeypatch, None)
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert window._model.rowCount() == 0  # noqa: SLF001
+    assert "Nothing captured" in window.statusBar().currentMessage()
+
+
+def test_the_window_gets_out_of_the_way_and_comes_back(window, qapp, monkeypatch) -> None:
+    """The QR is usually behind qt-otp, so the window hides while selecting."""
+    create_vault(window, qapp)
+    visibility = []
+    from otpvault.ui import mainwindow as mw
+
+    def capture_while_hidden():
+        visibility.append(window.isVisible())
+        return None
+
+    monkeypatch.setattr(mw, "select_region", capture_while_hidden)
+
+    window._scan_qr_code()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert visibility == [False], "the window should be hidden while the screen is selected"
+    assert window.isVisible(), "and shown again afterwards"
+
+
+def test_a_locked_vault_never_scans(window, qapp, monkeypatch) -> None:
+    called = []
+    from otpvault.ui import mainwindow as mw
+
+    monkeypatch.setattr(mw, "select_region", lambda: called.append(True))
+
+    window._scan_qr_code()  # noqa: SLF001
+
+    assert called == []

@@ -36,9 +36,18 @@ from .unlock import MIN_PASSWORD_LENGTH, password_strength
 class EntryDialog(QDialog):
     """Create or edit a single token."""
 
-    def __init__(self, parent: QWidget | None = None, entry: OtpEntry | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        entry: OtpEntry | None = None,
+        prefill: OtpEntry | None = None,
+    ) -> None:
+        """`entry` edits an existing token; `prefill` starts a new one from
+        values found elsewhere — a scanned QR code, say — and still saves as an
+        addition rather than an edit."""
         super().__init__(parent)
         self._entry = entry
+        values = entry or prefill
         self.setWindowTitle("Edit code" if entry else "Add code")
         self.setModal(True)
         self.setMinimumWidth(420)
@@ -47,16 +56,16 @@ class EntryDialog(QDialog):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
-        self._issuer = QLineEdit(entry.issuer if entry else "")
+        self._issuer = QLineEdit(values.issuer if values else "")
         self._issuer.setPlaceholderText("GitHub")
         form.addRow("Issuer", self._issuer)
 
-        self._account = QLineEdit(entry.account if entry else "")
+        self._account = QLineEdit(values.account if values else "")
         self._account.setPlaceholderText("you@example.com")
         form.addRow("Account", self._account)
 
         secret_row = QHBoxLayout()
-        self._secret = QLineEdit(entry.secret if entry else "")
+        self._secret = QLineEdit(values.secret if values else "")
         self._secret.setEchoMode(QLineEdit.EchoMode.Password)
         self._secret.setPlaceholderText("Base32 shared secret")
         secret_row.addWidget(self._secret, 1)
@@ -73,21 +82,21 @@ class EntryDialog(QDialog):
 
         self._algorithm = QComboBox()
         self._algorithm.addItems(sorted(totp.ALGORITHMS))
-        self._algorithm.setCurrentText(entry.algorithm if entry else totp.DEFAULT_ALGORITHM)
+        self._algorithm.setCurrentText(values.algorithm if values else totp.DEFAULT_ALGORITHM)
         form.addRow("Algorithm", self._algorithm)
 
         self._digits = QComboBox()
         self._digits.addItems([str(d) for d in totp.ALLOWED_DIGITS])
-        self._digits.setCurrentText(str(entry.digits if entry else totp.DEFAULT_DIGITS))
+        self._digits.setCurrentText(str(values.digits if values else totp.DEFAULT_DIGITS))
         form.addRow("Digits", self._digits)
 
         self._period = QSpinBox()
         self._period.setRange(5, 300)
         self._period.setSuffix(" s")
-        self._period.setValue(entry.period if entry else totp.DEFAULT_PERIOD)
+        self._period.setValue(values.period if values else totp.DEFAULT_PERIOD)
         form.addRow("Period", self._period)
 
-        self._notes = QPlainTextEdit(entry.notes if entry else "")
+        self._notes = QPlainTextEdit(values.notes if values else "")
         self._notes.setPlaceholderText("Optional notes (recovery codes go somewhere safer)")
         self._notes.setMaximumHeight(70)
         form.addRow("Notes", self._notes)
