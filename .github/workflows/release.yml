@@ -1,13 +1,12 @@
 # Build the single-file Windows executable and publish it as a GitHub release.
 #
-# Triggered by a tag like v1.0 or v2.11 (the vX.X shape). To also release patch
-# tags such as v1.0.3, add 'v[0-9]+.[0-9]+.[0-9]+' to the tags list below.
+# Triggered by a tag like v1.0.3
 name: release
 
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:      # lets you rehearse the build without tagging
 
 permissions:
