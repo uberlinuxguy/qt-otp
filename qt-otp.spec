@@ -21,8 +21,12 @@ if not ICON_FILE.is_file():
     raise SystemExit(f"{ICON_FILE} is missing — run 'python tools/make_icon.py' first")
 
 # Data files keep their package-relative layout, so otpvault.ui.icons finds the
-# SVG with the same path arithmetic it uses from a source checkout.
-datas = [(str(SPEC_DIR / "otpvault" / "resources" / "qt-otp-icon.svg"), "otpvault/resources")]
+# SVGs with the same path arithmetic it uses from a source checkout.
+RESOURCES = SPEC_DIR / "otpvault" / "resources"
+datas = [
+    (str(RESOURCES / "qt-otp-icon.svg"), "otpvault/resources"),
+    (str(RESOURCES / "qt-otp-about.svg"), "otpvault/resources"),
+]
 
 excludes = [
     # Never imported on Windows: lockwatch only touches QtDBus on Linux.

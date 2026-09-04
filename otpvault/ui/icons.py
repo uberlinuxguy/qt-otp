@@ -14,6 +14,10 @@ worse. The shipped artwork is already square, so this is a no-op for it.
 The locked variant is the same artwork under a grey wash, so a glance at the
 taskbar or tray says whether the vault is open. If the file is missing or fails
 to parse, the drawn fallback below keeps the app usable.
+
+`about_pixmap` renders a second, larger piece of artwork — the cat holding the
+shield, the same drawing the README opens with — for the About dialog. It is
+not square and not letterboxed: the dialog has room for the whole thing.
 """
 
 from __future__ import annotations
@@ -24,8 +28,11 @@ from PySide6.QtCore import QCoreApplication, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-ICON_PATH = Path(__file__).resolve().parent.parent / "resources" / "qt-otp-icon.svg"
+RESOURCE_DIR = Path(__file__).resolve().parent.parent / "resources"
+ICON_PATH = RESOURCE_DIR / "qt-otp-icon.svg"
+ABOUT_PATH = RESOURCE_DIR / "qt-otp-about.svg"
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ABOUT_HEIGHT = 132
 
 FALLBACK_ACCENT = QColor("#2f6b45")
 FALLBACK_DIM = QColor("#8a94a6")
@@ -110,6 +117,31 @@ def app_icon() -> QIcon:
 def locked_icon() -> QIcon:
     """A greyed variant shown while the vault is locked."""
     return _cached("locked", lambda: _from_file(_greyed) or _drawn_icon(FALLBACK_DIM))
+
+
+def about_pixmap(height: int = ABOUT_HEIGHT, ratio: float = 1.0) -> QPixmap:
+    """The About dialog artwork, `height` logical pixels tall.
+
+    `ratio` is the dialog's device pixel ratio: the vector is rendered at that
+    many real pixels per logical one, so the drawing stays sharp on a HiDPI
+    screen. Falls back to the app icon if the artwork is missing.
+    """
+    renderer = QSvgRenderer(str(ABOUT_PATH)) if ABOUT_PATH.is_file() else None
+    if renderer is None or not renderer.isValid():
+        return app_icon().pixmap(height, height)
+    default = renderer.defaultSize()
+    if default.isEmpty():
+        return app_icon().pixmap(height, height)
+    width = max(1, round(height * default.width() / default.height()))
+    ratio = max(1.0, ratio)
+    pixmap = QPixmap(round(width * ratio), round(height * ratio))
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    renderer.render(painter, QRectF(0, 0, width * ratio, height * ratio))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
 
 
 # --------------------------------------------------------------------------

@@ -1098,3 +1098,27 @@ def test_a_locked_vault_never_scans(window, qapp, monkeypatch) -> None:
     window._scan_qr_code()  # noqa: SLF001
 
     assert called == []
+
+
+def test_the_about_dialog_shows_the_cat_artwork(window, qapp, monkeypatch) -> None:
+    """Not the window icon QMessageBox.about() would have used."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from otpvault import APP_DISPLAY_NAME, __version__
+    from otpvault.ui import icons
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self))
+
+    window._show_about()  # noqa: SLF001
+
+    assert len(shown) == 1
+    box = shown[0]
+    assert APP_DISPLAY_NAME in box.windowTitle()
+    assert __version__ in box.text()
+    assert str(window._vault.path) in box.text()  # noqa: SLF001
+
+    pixmap = box.iconPixmap()
+    assert not pixmap.isNull()
+    assert pixmap.toImage() == icons.about_pixmap(ratio=window.devicePixelRatioF()).toImage()
+    assert pixmap.width() != pixmap.height(), "the tall artwork, not a square icon"

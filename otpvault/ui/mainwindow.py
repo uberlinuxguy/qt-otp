@@ -949,15 +949,21 @@ class MainWindow(QMainWindow):
             self._clipboard_timer.stop()
 
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            f"About {APP_DISPLAY_NAME}",
+        # Built by hand rather than with QMessageBox.about(), which always uses
+        # the window icon: this one shows the larger About artwork instead.
+        box = QMessageBox(self)
+        box.setWindowTitle(f"About {APP_DISPLAY_NAME}")
+        box.setIconPixmap(icons.about_pixmap(ratio=self.devicePixelRatioF()))
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
             f"<b>{APP_DISPLAY_NAME} {__version__}</b>"
             "<p>TOTP codes kept in a single file encrypted with AES-256-GCM, "
             "keyed from your master password with scrypt.</p>"
             f"<p>Vault: {self._vault.path}<br>"
-            f"Lock detection: {self._watcher.backend_name}</p>",
+            f"Lock detection: {self._watcher.backend_name}</p>"
         )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     # ---------------------------------------------------------------- window
 

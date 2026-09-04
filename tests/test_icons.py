@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtSvg import QSvgRenderer
 
 from otpvault.ui import icons
 
@@ -133,3 +134,59 @@ def test_non_square_art_is_letterboxed_transparently_not_stretched(
     assert image.pixelColor(32, 0).alpha() == 0  # padding at the top edge
     assert image.pixelColor(32, 32).alpha() == 255  # artwork through the middle
     assert image.pixelColor(0, 32).alpha() == 255  # 2:1 art spans the full width
+
+
+# --------------------------------------------------------------------------
+# About dialog artwork
+# --------------------------------------------------------------------------
+
+
+def test_the_about_artwork_ships_with_the_package() -> None:
+    assert icons.ABOUT_PATH.is_file()
+    assert icons.ABOUT_PATH.name == "qt-otp-about.svg"
+    assert icons.ABOUT_PATH.parent.name == "resources"
+
+
+def test_the_about_artwork_matches_the_drawing_in_the_readme() -> None:
+    """The README and the dialog must not drift apart."""
+    repo_copy = Path(__file__).resolve().parent.parent / "docs" / "qt-otp.svg"
+    assert repo_copy.read_bytes() == icons.ABOUT_PATH.read_bytes()
+
+
+def test_about_pixmap_keeps_the_aspect_ratio_and_is_not_letterboxed(qapp) -> None:
+    pixmap = icons.about_pixmap(height=132)
+    assert pixmap.height() == 132
+    assert pixmap.width() < pixmap.height(), "the artwork is taller than it is wide"
+
+    # Unlike the tray icon, the pixmap is not padded out to a square: it is the
+    # source's own shape, so nothing is stretched and nothing is wasted.
+    source = QSvgRenderer(str(icons.ABOUT_PATH)).defaultSize()
+    expected = round(132 * source.width() / source.height())
+    assert pixmap.width() == expected
+
+
+def test_about_pixmap_renders_extra_pixels_for_a_hidpi_dialog(qapp) -> None:
+    plain = icons.about_pixmap(height=132)
+    retina = icons.about_pixmap(height=132, ratio=2.0)
+    assert retina.height() == plain.height() * 2
+    assert retina.devicePixelRatio() == 2.0
+    # Same logical size on screen, drawn from the vector at twice the detail.
+    assert retina.deviceIndependentSize() == plain.deviceIndependentSize()
+
+
+def test_about_pixmap_falls_back_to_the_app_icon_when_the_artwork_is_missing(
+    qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(icons, "ABOUT_PATH", tmp_path / "not-here.svg")
+    pixmap = icons.about_pixmap(height=64)
+    assert not pixmap.isNull()
+    assert (pixmap.width(), pixmap.height()) == (64, 64)
+
+
+def test_about_pixmap_falls_back_when_the_artwork_will_not_parse(
+    qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    broken = tmp_path / "broken.svg"
+    broken.write_text("<svg><this is not markup")
+    monkeypatch.setattr(icons, "ABOUT_PATH", broken)
+    assert not icons.about_pixmap(height=64).isNull()

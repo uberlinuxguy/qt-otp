@@ -102,8 +102,9 @@ def test_the_spec_points_at_files_that_exist() -> None:
     text = SPEC.read_text(encoding="utf-8")
     assert "tools" in text and "entrypoint.py" in text
     assert (REPO / "tools" / "entrypoint.py").is_file()
-    assert "qt-otp-icon.svg" in text
-    assert (REPO / "otpvault" / "resources" / "qt-otp-icon.svg").is_file()
+    for resource in ("qt-otp-icon.svg", "qt-otp-about.svg"):
+        assert resource in text, f"{resource} is no longer bundled"
+        assert (REPO / "otpvault" / "resources" / resource).is_file()
 
 
 def test_the_spec_builds_a_windowed_single_file() -> None:
