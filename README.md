@@ -1,8 +1,14 @@
 # qt-otp
 
-A Qt desktop app that holds your TOTP (authenticator) codes in a single
+<img src="docs/qt-otp.svg" alt="qt-otp logo" align="left" width="110" hspace="16" vspace="4">
+
+qt-otp (cutie-o-t-p) Qt desktop app that holds your TOTP (authenticator) codes in a single
 password-encrypted file, shows the live 6/8-digit codes, and locks itself the
-moment you lock your workstation.
+moment you lock your workstation. Add codes by scanning a QR code off your
+screen, pasting an `otpauth://` URI, or typing the secret by hand; the vault
+itself is AES-256-GCM encrypted with a key derived from your master password.
+
+<br clear="left">
 
 ![code list](docs/codes.png)
 
