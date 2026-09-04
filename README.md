@@ -68,12 +68,12 @@ warn on first run — **More info** then **Run anyway**. Both carry a `.sha256`
 sidecar if you would rather verify the download:
 
 ```powershell
-(Get-FileHash .\qt-otp-v1.0-windows-x64-setup.exe -Algorithm SHA256).Hash
+(Get-FileHash .\qt-otp-v1.4.1-windows-x64-setup.exe -Algorithm SHA256).Hash
 ```
 
 ### Windows: the installer
 
-`qt-otp-vX.X-windows-x64-setup.exe` installs to `%LOCALAPPDATA%\Programs\qt-otp`
+`qt-otp-vX.Y.Z-windows-x64-setup.exe` installs to `%LOCALAPPDATA%\Programs\qt-otp`
 for you alone, which needs no administrator; choose **All users** on the first
 page to put it in `Program Files` instead. You get a Start menu shortcut
 (desktop shortcut optional) and an entry in Apps & features.
@@ -85,8 +85,8 @@ you answer yes to a prompt that says so in as many words.
 It takes the usual NSIS switches, so it scripts cleanly:
 
 ```powershell
-.\qt-otp-v1.0-windows-x64-setup.exe /S /CurrentUser        # silent, per-user
-.\qt-otp-v1.0-windows-x64-setup.exe /S /AllUsers /D=C:\Apps\qt-otp
+.\qt-otp-v1.4.1-windows-x64-setup.exe /S /CurrentUser        # silent, per-user
+.\qt-otp-v1.4.1-windows-x64-setup.exe /S /AllUsers /D=C:\Apps\qt-otp
 ```
 
 `/D=` must come last and must not be quoted — that is NSIS, not a typo. A
@@ -95,7 +95,7 @@ vault, since there is nobody there to ask.
 
 ### Windows: just the .exe
 
-Prefer no installer at all? Grab `qt-otp-vX.X-windows-x64.exe` and run it. One
+Prefer no installer at all? Grab `qt-otp-vX.Y.Z-windows-x64.exe` and run it. One
 self-contained file (~47 MB), nothing written outside your vault directory, and
 it keeps that vault in the same place as every other install.
 
@@ -381,12 +381,14 @@ Two details worth knowing before editing it:
 ## Releasing
 
 1. Bump `__version__` in [`otpvault/__init__.py`](otpvault/__init__.py) — the
-   only place a version number lives; `pyproject.toml` reads it from there.
+   only place a version number lives; `pyproject.toml` reads it from there. It
+   needs all three parts (`1.4.2`, not `1.4`), because the tag is that version
+   with a `v` in front.
 2. Tag and push:
 
    ```powershell
-   git tag v1.1
-   git push origin v1.1
+   git tag v1.4.2
+   git push origin v1.4.2
    ```
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) then runs on a
@@ -401,8 +403,11 @@ installs it silently, runs `--selftest` from the *installed* copy — which prov
 NSIS round-tripped the executable intact — then uninstalls silently and checks
 that the files and the Apps & features entry are gone.
 
-The trigger is the `vX.X` shape (`v1.0`, `v2.11`). To release patch tags too,
-add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
+The trigger is the `vX.Y.Z` shape (`v1.0.0`, `v2.11.3`), and the tag has to be
+exactly `v` + `__version__` — the workflow refuses anything else before it
+builds. A `tests/test_release_workflow.py` case checks the same thing locally,
+so a version that could never be tagged fails at `pytest` time rather than at
+tag time.
 
 ## Tests
 
@@ -439,7 +444,7 @@ add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.
 - the vault location: moving a live vault, refusing to clobber another file
   without confirmation, keeping the old path when a move fails, and never
   persisting a `--vault` override;
-- the release pipeline: that the workflow still triggers on `vX.X`, tests before
+- the release pipeline: that the workflow still triggers on `vX.Y.Z`, tests before
   it publishes, smoke-tests the executable, and references files that exist;
 - single-instance behaviour, including four tests that launch the app twice as
   real processes and check the second one hands over and exits — the request and

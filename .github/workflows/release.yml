@@ -45,7 +45,14 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           $version = python -c "import otpvault; print(otpvault.__version__)"
-          $expected = "v" + ((($version -split '\.')[0, 1]) -join '.')
+          # The tag pattern is vX.Y.Z, so a two-part __version__ could never
+          # match one — say so plainly instead of reporting a mismatch against a
+          # tag this step derived itself.
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "otpvault __version__ is '$version'; release tags are vX.Y.Z, so it needs three numeric parts."
+            exit 1
+          }
+          $expected = "v$version"
           if ($expected -ne "${{ github.ref_name }}") {
             Write-Error "tag ${{ github.ref_name }} does not match otpvault __version__ $version (expected $expected). Bump the version or retag."
             exit 1

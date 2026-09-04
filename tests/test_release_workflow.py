@@ -6,6 +6,7 @@ discover a renamed file or a broken trigger.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -37,9 +38,30 @@ def test_the_workflow_and_spec_exist() -> None:
     assert SPEC.is_file()
 
 
-def test_it_triggers_on_vx_x_tags(workflow: dict) -> None:
+def test_it_triggers_on_vx_y_z_tags(workflow: dict) -> None:
     tags = triggers(workflow)["push"]["tags"]
-    assert "v[0-9]+.[0-9]+" in tags, f"vX.X tags would not build: {tags}"
+    assert "v[0-9]+.[0-9]+.[0-9]+" in tags, f"vX.Y.Z tags would not build: {tags}"
+
+
+def test_the_tag_check_compares_the_whole_version(job: dict) -> None:
+    """The trigger shape and the tag check have to agree.
+
+    The check used to expect "v" plus the *first two* parts of __version__,
+    which stopped matching the moment the trigger moved to vX.Y.Z: every tagged
+    build would then fail against a tag the step had derived itself.
+    """
+    step = next(s for s in job["steps"] if "tag matches" in s.get("name", ""))
+    assert '"v$version"' in step["run"], "the tag must be compared against the full version"
+
+
+def test_the_packaged_version_can_be_tagged() -> None:
+    """A two-part __version__ would be untaggable, and only a tag would say so."""
+    version = (REPO / "otpvault" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__ = "([^"]+)"', version, re.MULTILINE)
+    assert match, "__version__ is no longer where the spec and workflow look for it"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", match.group(1)), (
+        f"__version__ is {match.group(1)!r}; release tags are vX.Y.Z, so it needs three parts"
+    )
 
 
 def test_it_can_write_releases(workflow: dict) -> None:
