@@ -62,20 +62,42 @@ lock state is readable without switching to the app.
 
 ## Install and run
 
-### Windows: just the .exe
-
-Grab `qt-otp-vX.X-windows-x64.exe` from the
-[latest release](../../releases/latest) and run it. One self-contained file
-(~47 MB), no installer and no Python needed; it keeps its vault in the same
-place as a source install.
-
-The executable is not code-signed, so SmartScreen will warn on first run —
-**More info** then **Run anyway**. Every release ships a `.sha256` sidecar if
-you would rather verify the download:
+Every [release](../../releases/latest) ships the same application two ways: an
+installer and a portable `.exe`. Neither is code-signed, so SmartScreen will
+warn on first run — **More info** then **Run anyway**. Both carry a `.sha256`
+sidecar if you would rather verify the download:
 
 ```powershell
-(Get-FileHash .\qt-otp-v1.0-windows-x64.exe -Algorithm SHA256).Hash
+(Get-FileHash .\qt-otp-v1.0-windows-x64-setup.exe -Algorithm SHA256).Hash
 ```
+
+### Windows: the installer
+
+`qt-otp-vX.X-windows-x64-setup.exe` installs to `%LOCALAPPDATA%\Programs\qt-otp`
+for you alone, which needs no administrator; choose **All users** on the first
+page to put it in `Program Files` instead. You get a Start menu shortcut
+(desktop shortcut optional) and an entry in Apps & features.
+
+The installer never touches your vault. Installing over an existing copy
+upgrades it in place, and uninstalling leaves `%APPDATA%\qt-otp` alone unless
+you answer yes to a prompt that says so in as many words.
+
+It takes the usual NSIS switches, so it scripts cleanly:
+
+```powershell
+.\qt-otp-v1.0-windows-x64-setup.exe /S /CurrentUser        # silent, per-user
+.\qt-otp-v1.0-windows-x64-setup.exe /S /AllUsers /D=C:\Apps\qt-otp
+```
+
+`/D=` must come last and must not be quoted — that is NSIS, not a typo. A
+silent uninstall (`QuietUninstallString` in the registry) always keeps your
+vault, since there is nobody there to ask.
+
+### Windows: just the .exe
+
+Prefer no installer at all? Grab `qt-otp-vX.X-windows-x64.exe` and run it. One
+self-contained file (~47 MB), nothing written outside your vault directory, and
+it keeps that vault in the same place as every other install.
 
 ### From source
 
@@ -292,6 +314,7 @@ otpvault/
   selftest.py   post-build checks, run with --selftest
 tests/          RFC 6238 vectors, crypto tamper cases, vault lifecycle
 tools/          make_icon.py (SVG -> .ico), entrypoint.py (PyInstaller script)
+installer/      qt-otp.nsi, the NSIS installer that wraps the built .exe
 qt-otp.spec     PyInstaller build definition
 ```
 
@@ -327,6 +350,34 @@ executables, so without it the checks print after your next prompt and
 `Start-Process -Wait -PassThru` and read its `ExitCode` — which is what the
 release workflow does.
 
+## Building the installer
+
+[`installer/qt-otp.nsi`](installer/qt-otp.nsi) wraps `dist\qt-otp.exe` — build
+that first. Needs [NSIS](https://nsis.sourceforge.io/) 3.x; the version number
+is the only argument it insists on:
+
+```powershell
+& "C:\Program Files (x86)\NSIS\makensis.exe" /DVERSION=1.4.0 installer\qt-otp.nsi
+```
+
+That writes `dist\qt-otp-setup.exe`. `SRC_EXE`, `ICON`, `LICENSE_FILE` and
+`OUT_FILE` are `/D`-overridable too, which is how the workflow points them at
+absolute paths.
+
+There is deliberately nothing in the installer but the one executable, its
+shortcuts and an uninstaller. It writes no file associations, no autostart entry
+and no `HKLM` state a per-user install could not manage — the app's own data
+(`%APPDATA%\qt-otp` and `HKCU\Software\qt-otp`) is created by the app and
+removed only if you ask the uninstaller to.
+
+Two details worth knowing before editing it:
+
+- NSIS's `MultiUser.nsh` assigns `$INSTDIR` inside `MULTIUSER_INIT`, which would
+  otherwise discard a `/D=` path. `.onInit` saves and restores it.
+- The installer is a 32-bit process, so it runs `SetRegView 64`; without that
+  every `HKLM` write would land in `Wow6432Node`, where Apps & features does not
+  look.
+
 ## Releasing
 
 1. Bump `__version__` in [`otpvault/__init__.py`](otpvault/__init__.py) — the
@@ -340,10 +391,15 @@ release workflow does.
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) then runs on a
 Windows runner: it refuses tags that disagree with `__version__`, runs the test
-suite, builds the exe, smoke-tests it with `--selftest`, and publishes a release
-with the executable and its SHA-256. Re-running a tag replaces the assets
-instead of failing. `workflow_dispatch` builds without releasing, if you want to
-rehearse.
+suite, builds the exe, smoke-tests it with `--selftest`, builds the NSIS
+installer around it, and publishes a release with both files and their SHA-256s.
+Re-running a tag replaces the assets instead of failing. `workflow_dispatch`
+builds without releasing, if you want to rehearse.
+
+The installer gets its own smoke test before anything is published: the workflow
+installs it silently, runs `--selftest` from the *installed* copy — which proves
+NSIS round-tripped the executable intact — then uninstalls silently and checks
+that the files and the Apps & features entry are gone.
 
 The trigger is the `vX.X` shape (`v1.0`, `v2.11`). To release patch tags too,
 add `'v[0-9]+.[0-9]+.[0-9]+'` to the `tags:` list.

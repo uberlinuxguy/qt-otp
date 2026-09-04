@@ -87,19 +87,117 @@ jobs:
           }
           Write-Host "self-test passed on the packaged build"
 
-      - name: Name and checksum the asset
+      - name: Build the NSIS installer
+        run: |
+          # NSIS ships on the windows runner images; install it only if that
+          # ever stops being true, so the normal path costs nothing.
+          $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) { $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+          if (-not (Test-Path $makensis)) {
+            Write-Host "NSIS not found on the image; installing it"
+            choco install nsis --no-progress -y
+            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+
+          # VIProductVersion insists on four numeric parts; __version__ has three.
+          $version = python -c "import otpvault; print(otpvault.__version__)"
+          $parts = @($version -split '\.') + @('0', '0', '0')
+          $version4 = ($parts[0..3]) -join '.'
+
+          & $makensis /V2 `
+            "/DVERSION=$version" `
+            "/DVERSION4=$version4" `
+            "/DSRC_EXE=$PWD\dist\qt-otp.exe" `
+            "/DICON=$PWD\build\qt-otp.ico" `
+            "/DLICENSE_FILE=$PWD\LICENSE" `
+            "/DOUT_FILE=$PWD\dist\qt-otp-setup.exe" `
+            installer\qt-otp.nsi
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "makensis failed (exit $LASTEXITCODE)"
+            exit 1
+          }
+          Write-Host "built dist\qt-otp-setup.exe for $version"
+
+      - name: Smoke-test the installer
+        run: |
+          # No spaces in RUNNER_TEMP, which matters: NSIS requires /D= to come
+          # last and to carry no quotes, so nothing here may need quoting.
+          $dir = "$env:RUNNER_TEMP\qt-otp-install-test"
+
+          $proc = Start-Process -FilePath .\dist\qt-otp-setup.exe `
+            -ArgumentList '/S', '/CurrentUser', "/D=$dir" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "the installer failed (exit $($proc.ExitCode))"
+            exit 1
+          }
+
+          $key = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\qt-otp"
+          foreach ($path in @("$dir\qt-otp.exe", "$dir\Uninstall.exe", $key)) {
+            if (-not (Test-Path $path)) {
+              Write-Error "the installer did not create $path"
+              exit 1
+            }
+          }
+          $entry = Get-ItemProperty $key
+          Write-Host "Apps & features entry: $($entry.DisplayName) $($entry.DisplayVersion) -> $($entry.InstallLocation)"
+
+          # The installed copy is the compressed one: prove NSIS round-tripped
+          # the executable intact rather than trusting dist\qt-otp.exe's result.
+          $proc = Start-Process -FilePath "$dir\qt-otp.exe" `
+            -ArgumentList '--selftest', 'installed-selftest.json' `
+            -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "the installed executable failed its self-test (exit $($proc.ExitCode))"
+            exit 1
+          }
+
+          # _?= keeps the uninstaller from relaunching itself out of %TEMP%, so
+          # this call is synchronous. The price is that it cannot delete itself,
+          # which is why $dir is checked for the app rather than for absence.
+          $proc = Start-Process -FilePath "$dir\Uninstall.exe" `
+            -ArgumentList '/CurrentUser', '/S', "_?=$dir" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "the uninstaller failed (exit $($proc.ExitCode))"
+            exit 1
+          }
+          if (Test-Path "$dir\qt-otp.exe") {
+            Write-Error "the uninstaller left qt-otp.exe behind"
+            exit 1
+          }
+          if (Test-Path $key) {
+            Write-Error "the uninstaller left the Apps & features entry behind"
+            exit 1
+          }
+          Write-Host "installer round-trip passed: install, self-test, uninstall"
+
+      - name: Name and checksum the assets
         id: asset
         run: |
           $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
           $name = "qt-otp-$tag-windows-x64.exe"
+          $setup = "qt-otp-$tag-windows-x64-setup.exe"
           Move-Item dist\qt-otp.exe "dist\$name"
-          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Out-File -Encoding ascii "dist\$name.sha256"
-          $size = "{0:N1}" -f ((Get-Item "dist\$name").Length / 1MB)
-          "name=$name"   | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
-          "sha256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
-          "size=$size"   | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
-          Write-Host "$name  ($size MB)  sha256=$hash"
+          Move-Item dist\qt-otp-setup.exe "dist\$setup"
+
+          # Writes the sha256 sidecar in the shape `sha256sum -c` expects and
+          # returns "<hash> <size in MB>" for the release notes.
+          function Publish-Asset($file) {
+            $hash = (Get-FileHash "dist\$file" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $file" | Out-File -Encoding ascii "dist\$file.sha256"
+            $size = "{0:N1}" -f ((Get-Item "dist\$file").Length / 1MB)
+            Write-Host "$file  ($size MB)  sha256=$hash"
+            return @($hash, $size)
+          }
+
+          $exeHash, $exeSize = Publish-Asset $name
+          $setupHash, $setupSize = Publish-Asset $setup
+
+          "name=$name"               | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "sha256=$exeHash"          | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "size=$exeSize"            | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "setup_name=$setup"        | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "setup_sha256=$setupHash"  | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "setup_size=$setupSize"    | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
       - name: Upload the build artifact
         uses: actions/upload-artifact@v4
@@ -108,6 +206,8 @@ jobs:
           path: |
             dist/${{ steps.asset.outputs.name }}
             dist/${{ steps.asset.outputs.name }}.sha256
+            dist/${{ steps.asset.outputs.setup_name }}
+            dist/${{ steps.asset.outputs.setup_name }}.sha256
             selftest-report.json
           if-no-files-found: error
 
@@ -116,25 +216,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag  = "${{ github.ref_name }}"
-          $name = "${{ steps.asset.outputs.name }}"
+          $tag   = "${{ github.ref_name }}"
+          $name  = "${{ steps.asset.outputs.name }}"
+          $setup = "${{ steps.asset.outputs.setup_name }}"
           @"
           ## qt-otp $tag
 
-          Single-file Windows build (x64). Download ``$name`` and run it — no
-          installer, no Python needed.
+          Windows x64. Two ways to get it — both are the same application.
 
-          Windows will show a SmartScreen warning because the executable is not
-          code-signed: choose **More info** then **Run anyway**, or verify the
-          download first.
+          | Download | | |
+          | --- | --- | --- |
+          | ``$setup`` | installer | $("${{ steps.asset.outputs.setup_size }}") MB |
+          | ``$name`` | portable, single file | $("${{ steps.asset.outputs.size }}") MB |
 
-          | | |
+          The installer puts qt-otp under your own profile by default, so it
+          needs no administrator; pick **All users** on the first page to
+          install to Program Files instead. It adds a Start menu shortcut and an
+          Apps & features entry, and **never touches your vault** — upgrading
+          over an existing copy and uninstalling both leave
+          ``%APPDATA%\qt-otp`` alone.
+
+          The portable build needs no installation at all: download and run.
+
+          Windows will show a SmartScreen warning either way, because neither
+          file is code-signed: choose **More info** then **Run anyway**, or
+          verify the download first.
+
+          | | SHA-256 |
           | --- | --- |
-          | Size | $("${{ steps.asset.outputs.size }}") MB |
-          | SHA-256 | ``$("${{ steps.asset.outputs.sha256 }}")`` |
+          | ``$setup`` | ``$("${{ steps.asset.outputs.setup_sha256 }}")`` |
+          | ``$name`` | ``$("${{ steps.asset.outputs.sha256 }}")`` |
 
           ``````powershell
-          (Get-FileHash .\$name -Algorithm SHA256).Hash
+          (Get-FileHash .\$setup -Algorithm SHA256).Hash
           ``````
           "@ | Out-File -Encoding utf8 release-notes.md
 
@@ -142,8 +256,12 @@ jobs:
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             Write-Host "release $tag exists; replacing its assets"
-            gh release upload $tag "dist/$name" "dist/$name.sha256" --clobber
+            gh release upload $tag `
+              "dist/$setup" "dist/$setup.sha256" `
+              "dist/$name" "dist/$name.sha256" --clobber
           } else {
-            gh release create $tag "dist/$name" "dist/$name.sha256" `
+            gh release create $tag `
+              "dist/$setup" "dist/$setup.sha256" `
+              "dist/$name" "dist/$name.sha256" `
               --title "qt-otp $tag" --notes-file release-notes.md --verify-tag
           }
